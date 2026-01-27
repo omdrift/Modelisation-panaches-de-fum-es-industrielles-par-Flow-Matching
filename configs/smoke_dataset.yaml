@@ -1,0 +1,60 @@
+name: "smoke_dataset"
+
+data:
+  data_root: /home/aoubaidi/Bureau/river/data/
+  input_size: 64
+  crop_size: 64
+  frames_per_sample: 10  # Réduit
+  random_horizontal_flip: True
+
+model:
+  sigma: 0.0000001
+  vector_field_regressor:
+    state_size: 4
+    state_res: [8, 8]    # DOIT CORRESPONDRE AU VQVAE !
+    inner_dim: 128       # Très réduit (était 256)
+    depth: 2
+    mid_depth: 2
+    out_norm: "ln"
+  autoencoder:
+    type: "ours"
+    ckpt_path: runs/vqvae_smoke_vqvae/vqvae_final.ckpt
+    encoder:
+      in_channels: 3
+      out_channels: 4
+      mid_channels: 32
+    decoder:
+      in_channels: 4
+      out_channels: 3
+      mid_channels: 32
+    vector_quantizer:
+      embedding_dimension: 4
+      num_embeddings: 16384
+      commitment_cost: 0.25
+
+training:
+  batching:
+    batch_size: 1        # Réduit à 1 !
+    num_workers: 2
+  optimizer:
+    learning_rate: 0.0001
+    weight_decay: 0.000005
+    num_warmup_steps: 1000
+    num_training_steps: 50000
+  num_observations: 10   # Réduit
+  condition_frames: 1
+  frames_to_generate: 9  # Réduit
+  loss_weights:
+    flow_matching_loss: 1.0
+
+evaluation:
+  batching:
+    batch_size: 1        # Réduit à 1
+    num_workers: 2
+    observations_count: 10
+    skip_frames: 0
+    observation_stacking: 1
+  num_observations: 10
+  condition_frames: 1
+  frames_to_generate: 9
+  steps: 50              # Réduit
