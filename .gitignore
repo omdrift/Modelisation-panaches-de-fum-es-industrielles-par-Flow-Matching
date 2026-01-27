@@ -25,4 +25,6 @@ TestResults.
 
 data/
 
+__pycache__ 
+
 smoke_videos
