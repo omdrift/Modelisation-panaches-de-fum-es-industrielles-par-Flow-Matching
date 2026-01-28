@@ -1,0 +1,26 @@
+# config_vqvae.yaml
+name: "vqvae_custom"
+
+# Encoder configuration
+encoder:
+  input_channels: 3
+  hidden_channels: 128
+  res_channels: 32
+  num_res_blocks: 2
+  num_downsample: 2  # 64x64 -> 16x16
+  embedding_dim: 256
+
+# Decoder configuration  
+decoder:
+  embedding_dim: 256
+  hidden_channels: 128
+  res_channels: 32
+  num_res_blocks: 2
+  num_upsample: 2  # 16x16 -> 64x64
+  output_channels: 3
+
+# Vector quantizer configuration
+vector_quantizer:
+  num_embeddings: 512  # Size of the codebook
+  embedding_dim: 256
+  commitment_cost: 0.25
