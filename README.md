@@ -4,7 +4,6 @@ Ce dépôt contient le code et les ressources pour la modélisation des panaches
 ## Quelques exemples de travaux
 
 - Vidéo originale (résolution standard 180×180) :
-  (6_0-0-2018-06-11-6304-964-6807-1467-180-180-3470-1528712115-1528712290.mp4)
 <table border="0">
   <tr>
     <td>
