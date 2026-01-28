@@ -1,7 +1,7 @@
 name: "smoke_dataset"
 
 data:
-  data_root: /home/aoubaidi/Bureau/river/data/
+  data_root: /home/aoubaidi/Documents/Modelisation-panaches-de-fum-es-industrielles-par-Flow-Matching/final_dataset
   input_size: 64
   crop_size: 64
   frames_per_sample: 10  # Réduit

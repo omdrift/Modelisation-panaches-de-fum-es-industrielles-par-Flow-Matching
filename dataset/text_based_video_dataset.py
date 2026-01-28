@@ -35,8 +35,13 @@ class TextBasedVideoDataset(Dataset):
             self.sequence_names = [line.strip() for line in f.readlines()]
         
         # Dossier contenant les images
-        self.images_dir = os.path.join(data_path, 'images')
-        
+        # Dossier contenant les images - detect train/ or test/ subdirectories
+        if 'train' in file_list:
+            self.images_dir = os.path.join(data_path, 'train')
+        elif 'test' in file_list or 'val' in file_list:
+            self.images_dir = os.path.join(data_path, 'test')
+        else:
+            self.images_dir = os.path.join(data_path, 'images')        
         # Construire un mapping des vidéos et leurs frames disponibles
         print(f"Scanning available frames...")
         self.video_frames = self._scan_available_frames()
@@ -63,7 +68,7 @@ class TextBasedVideoDataset(Dataset):
         for video_name in unique_videos:
             frame_count = 0
             for i in range(50):  # Chercher jusqu'à 50 frames max
-                frame_path = os.path.join(self.images_dir, f"{video_name}_f{i:04d}.png")
+                frame_path = os.path.join(self.images_dir, f"{video_name}_frame_{i:04d}.png")
                 if os.path.exists(frame_path):
                     frame_count = i + 1
                 else:
@@ -77,9 +82,11 @@ class TextBasedVideoDataset(Dataset):
     
     def get_video_name(self, sequence_name):
         """Extrait le nom de la vidéo depuis le nom de la séquence"""
-        # Exemple: clairton1_2018-12-13_frame9506_24_f0014 -> clairton1_2018-12-13_frame9506_24
-        parts = sequence_name.rsplit('_', 1)
-        return parts[0]
+        # Trouver la dernière occurrence de '_frame_' et tout retirer après
+        if '_frame_' in sequence_name:
+            return sequence_name[:sequence_name.rfind('_frame_')]
+        else:
+            return sequence_name.rsplit('_', 1)[0]
     
     def get_frame_number(self, sequence_name):
         """Extrait le numéro de frame depuis le nom de la séquence"""
@@ -113,7 +120,7 @@ class TextBasedVideoDataset(Dataset):
             
             frame_path = os.path.join(
                 self.images_dir, 
-                f"{video_name}_f{frame_num:04d}.png"
+                f"{video_name}_frame_{frame_num:04d}.png"
             )
             
             # Charger l'image
