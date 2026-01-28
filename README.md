@@ -72,7 +72,12 @@ La bibliothèque "River" (référence : https://github.com/araachie/river) a é
 Une vue d'ensemble des dossiers et scripts principaux :
 
 - **Fichiers racine**: `dataset_init.py`, `prepare_dataset.py`, `organize_dataset.PY`, `split_labels.py`, `train.py`, `train_vqvae.py`, `README.md`, `requirements.txt`. Scripts d'aide au téléchargement, préparation et entraînement.
-- **configs/**: fichiers de configuration YAML (ex. `config_vqvae.yaml`, `smoke_dataset.yaml`).
+- **configs/**: fichiers de configuration YAML utilisés pour les entraînements et la préparation des modèles. Exemples principaux :
+    - `configs/config_vqvae.yaml` : configuration du VQ-VAE / VQGAN (architecture de l'encodeur/décodeur, paramètres du vector-quantizer, embedding dim, etc.). Utilisé par `train_vqvae.py` via l'argument `--config`.
+    - `configs/smoke_dataset.yaml` : configuration pour le training Flow Matching (chemins `data.data_root`, paramètres du modèle `vector_field_regressor`, hyperparamètres d'entraînement, évaluation). Utilisé par `train.py` pour lancer l'entraînement final.
+    - Autres YAML : ajoutez vos propres fichiers de config ici pour expérimentations (ex. variantes d'architecture ou chemins locaux).
+
+    Utilisation rapide : passez `--config configs/config_vqvae.yaml` à `train_vqvae.py` et `--config configs/smoke_dataset.yaml` à `train.py`. Modifiez les chemins (`data.data_root`, checkpoints) directement dans les YAML pour pointer vers vos dossiers locaux.
 - **dataset/**: classes et utilitaires pour charger et convertir le jeu de données (`video_dataset.py`, `text_based_video_dataset.py`, `h5.py`, `convert_to_h5.py`).
 
 ### Scripts pour préparer le jeu de données final
@@ -113,6 +118,61 @@ python split_labels.py        # vérifier les frames manquantes
 ```
 
 Modifier les chemins et paramètres directement dans les scripts ou via les fichiers de configuration YAML selon vos besoins.
+
+## Lancer l'entraînement VQ-VAE (VQGAN)
+Suivez ces étapes pour entraîner le VQ-VAE (utilisé ici comme VQGAN) sur le `final_dataset`.
+
+1) Créer et activer l'environnement
+
+```bash
+conda env create -f environment.yml -n river
+conda activate river
+```
+
+
+3) Préparer le dataset (si pas déjà fait)
+
+```bash
+python dataset_init.py
+python prepare_dataset.py
+python organize_dataset.PY
+python split_labels.py
+```
+
+4) Vérifier que `final_dataset/train_files.txt` et `final_dataset/val_files.txt` existent et que `final_dataset/train/` contient les images.
+
+5) Lancer l'entraînement VQ-VAE
+
+Exemple d'appel (ajustez `--batch-size`, `--epochs`, `--num-workers` selon votre GPU/CPU) :
+
+```bash
+python train_vqvae.py \
+    --config configs/config_vqvae.yaml \
+    --run-name smoke_vqvae_experiment \
+    --batch-size 8 \
+    --num-workers 4 \
+    --epochs 50 \
+    --lr 1e-4 \
+    --wandb
+```
+
+- Sorties : dossier `runs/vqvae_smoke_vqvae_experiment/` contenant `reconstructions/` et checkpoints (selon implémentation).
+- Pour tester une image fixe à chaque époque, ajoutez `--test-image path/to/image.png`.
+
+6) Relancer / reprendre l'entraînement
+
+Si votre script sauvegarde des checkpoints, restaurez en adaptant le code de chargement ou en passant un argument de reprise (selon implémentation). Pour le workflow Flow Matching complet, utilisez `train.py` (voir configs/smoke_dataset.yaml) :
+
+```bash
+python train.py --run-name flow_run --config configs/smoke_dataset.yaml --num-gpus 1 --wandb
+```
+
+Remarques
+- Assurez-vous que CUDA est disponible (`nvidia-smi`) et que `torch.cuda.is_available()` renvoie True.
+- Ajustez `configs/config_vqvae.yaml` pour modifier architecture, taille d'embedding ou hyperparamètres.
+- Pour le suivi d'expérimentation, activez `--wandb` et configurez votre compte Weights & Biases.
+
+Section terminée. 
 - **evaluation/**: métriques et évaluateur (`evaluator.py`).
 - **experimentation/**: notebooks et ressources d'expérimentation (`segmentation_methods.ipynb`, `data/`, `model/`).
 - **final_dataset/**: jeu de données préparé pour l'entraînement (splits, `labels.txt`, statistiques, et sous-dossiers `train/`, `val/`, `test/`).
