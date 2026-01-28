@@ -25,4 +25,15 @@ TestResults.
 
 data/
 
+__pycache__ 
+
+runs_vqvae
+
+
+training
+final_dataset
+
 smoke_videos
+
+isolated_smoke_frame
+runs
