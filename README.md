@@ -74,6 +74,45 @@ Une vue d'ensemble des dossiers et scripts principaux :
 - **Fichiers racine**: `dataset_init.py`, `prepare_dataset.py`, `organize_dataset.PY`, `split_labels.py`, `train.py`, `train_vqvae.py`, `README.md`, `requirements.txt`. Scripts d'aide au téléchargement, préparation et entraînement.
 - **configs/**: fichiers de configuration YAML (ex. `config_vqvae.yaml`, `smoke_dataset.yaml`).
 - **dataset/**: classes et utilitaires pour charger et convertir le jeu de données (`video_dataset.py`, `text_based_video_dataset.py`, `h5.py`, `convert_to_h5.py`).
+
+### Scripts pour préparer le jeu de données final
+Les scripts suivants permettent de construire le dossier `final_dataset/` à partir des vidéos brutes et des métadonnées :
+
+- `dataset_init.py` : télécharge les vidéos correspondant aux labels ciblés (23 et 47) depuis `metadata_02242020.json` vers le dossier `smoke_videos/`. Modifier les constantes en haut du fichier pour changer la résolution, le dossier de destination ou le nombre de threads. Exemple :
+
+```bash
+python dataset_init.py
+```
+
+- `prepare_dataset.py` : extrait les images depuis les vidéos (`smoke_videos/`) et applique un pré-traitement / matting pour isoler les panaches de fumée ; écrit les frames dans `isolated_smoke_frames/`.
+
+```bash
+python prepare_dataset.py
+```
+
+- `organize_dataset.PY` : regroupe les frames extraites par vidéo, renomme pour éviter collisions, et crée le split `final_dataset/train/` et `final_dataset/test/` ainsi que les fichiers `train_files.txt`, `test_files.txt` et `labels.txt`.
+
+```bash
+python organize_dataset.PY
+```
+
+- `dataset/convert_to_h5.py` (ou `convert_to_h5.py` racine) : convertit les images et listes en un fichier HDF5 optimisé pour les dataloaders (si présent). Utiliser si vous préférez charger les données depuis un seul fichier h5.
+
+- `split_labels.py` : vérifie l'intégrité des séquences (frames manquantes) et génère `missing_frames_report.json` si nécessaire.
+
+- `dataset/text_based_video_dataset.py` : classe `TextBasedVideoDataset` utilisée par `train_vqvae.py` et `train.py` pour charger les séquences en se basant sur `train_files.txt` / `val_files.txt`.
+
+Workflow recommandé (exécution séquentielle) :
+
+```bash
+python dataset_init.py        # télécharger vidéos sélectionnées
+python prepare_dataset.py     # extraire et isoler frames
+python organize_dataset.PY    # organiser, renommer et créer splits
+python split_labels.py        # vérifier les frames manquantes
+# (optionnel) python dataset/convert_to_h5.py
+```
+
+Modifier les chemins et paramètres directement dans les scripts ou via les fichiers de configuration YAML selon vos besoins.
 - **evaluation/**: métriques et évaluateur (`evaluator.py`).
 - **experimentation/**: notebooks et ressources d'expérimentation (`segmentation_methods.ipynb`, `data/`, `model/`).
 - **final_dataset/**: jeu de données préparé pour l'entraînement (splits, `labels.txt`, statistiques, et sous-dossiers `train/`, `val/`, `test/`).
