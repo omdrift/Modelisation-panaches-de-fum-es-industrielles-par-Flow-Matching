@@ -1,8 +1,19 @@
 # Modélisation des panaches de fumées industrielles — Flow Matching
 
 Ce dépôt contient le code et les ressources pour la modélisation des panaches de fumées industrielles, basé notamment sur des approches VQGAN et Flow Matching.
+## Quelques exemples de travaux
 
-Prérequis
+- Vidéo originale (résolution standard 180×180) :
+  [media/6_0-0-2018-06-11-6304-964-6807-1467-180-180-3470-1528712115-1528712290.mp4](6_0-0-2018-06-11-6304-964-6807-1467-180-180-3470-1528712115-1528712290.mp4)
+
+- Frames de segmentation (exemples dans final_dataset/train/, nommage) :
+  [media/6_0-0-2018-06-11-6304-964-6807-1467-180-180-3470-1528712115-1528712290_frame0001.png](6_0-0-2018-06-11-6304-964-6807-1467-180-180-3470-1528712115-1528712290_frame0001.png)
+  (pattern de nommage : nomvideo_frame0001.png, nomvideo_frame0002.png, ...)
+
+- Reconstruction VQ-VAE (exemple) :
+  [media/custom_recon_epoch_56.png](custom_recon_epoch_56.png)
+  
+  Prérequis
 - Conda (ou mamba) et pilotes NVIDIA installés (vérifier avec `nvidia-smi`).
 - Python 3.9+
 
@@ -114,7 +125,6 @@ python dataset_init.py        # télécharger vidéos sélectionnées
 python prepare_dataset.py     # extraire et isoler frames
 python organize_dataset.PY    # organiser, renommer et créer splits
 python split_labels.py        # vérifier les frames manquantes
-# (optionnel) python dataset/convert_to_h5.py
 ```
 
 Modifier les chemins et paramètres directement dans les scripts ou via les fichiers de configuration YAML selon vos besoins.
@@ -201,6 +211,5 @@ Fichiers utiles
 - `env.yml` : configuration de l'environnement
 - `metadata_02242020.json` : métadonnées pour le téléchargement des vidéos
 
-Pour toute question ou si vous souhaitez que je reformule certaines sections en anglais ou que j'ajoute un sommaire détaillé, dites-le moi.
 
 
