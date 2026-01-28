@@ -9,7 +9,7 @@ Ce dépôt contient le code et les ressources pour la modélisation des panaches
   <tr>
     <td>
       <p align="center"><b>Source (180x180)</b></p>
-      <video src="media/6_0-0-2018-06-11-6304-964-6807-1467-180-180-3470-1528712115-1528712290.mp4" width="250" controls></video>
+      <video src="media/6_0-0-2018-06-11-6304-964-6807-1467-180-180-3470-1528712115-1528712290.mp4" width="180" controls></video>
     </td>
     <td>
       <p align="center"><b>Reconstruction VQ-VAE</b></p>
@@ -20,7 +20,7 @@ Ce dépôt contient le code et les ressources pour la modélisation des panaches
 
 - Extraction et traitement des masques de segmentation pour l'entraînement du modèle.
 <p align="center">
-  <img src="media/6_0-0-2018-06-11-6304-964-6807-1467-180-180-3470-1528712115-1528712290_frame0002.png" width="400" alt="Segmentation Frame">
+  <img src="media/6_0-0-2018-06-11-6304-964-6807-1467-180-180-3470-1528712115-1528712290_frame0001.png" width="180" alt="Segmentation Frame">
 </p>
   
   Prérequis
