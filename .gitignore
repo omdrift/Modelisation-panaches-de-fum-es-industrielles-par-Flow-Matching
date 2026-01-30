@@ -32,7 +32,7 @@ runs_vqvae
 
 training
 final_dataset
-
+smoke_frames
 smoke_videos
 
 isolated_smoke_frame
