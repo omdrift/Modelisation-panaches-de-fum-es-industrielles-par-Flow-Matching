@@ -50,8 +50,7 @@ def organize_dataset(src_root, dst_root, train_ratio=0.8, val_ratio=0.1):
                 
                 shutil.copy(frame_path, dst_file)
                 
-                # store only the filename (TextBasedVideoDataset expects bare sequence names)
-                label_list.append(f"{new_name}")
+                label_list.append(f"{split_name}/{new_name} 1")
 
     process_split(train_folders, train_path, "train", train_labels)
     process_split(val_folders, val_path, "val", val_labels)
@@ -74,7 +73,7 @@ def organize_dataset(src_root, dst_root, train_ratio=0.8, val_ratio=0.1):
 
     print(f"Labels saved: train.txt ({len(train_labels)} lines), val.txt ({len(val_labels)} lines) and test.txt ({len(test_labels)} lines)")
 
-SOURCE_DIR = "isolated_smoke_frames/"
+SOURCE_DIR = "smoke_frames/"
 DEST_DIR = "final_dataset/"
 
 organize_dataset(SOURCE_DIR, DEST_DIR)

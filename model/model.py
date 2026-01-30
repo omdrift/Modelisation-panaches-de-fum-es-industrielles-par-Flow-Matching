@@ -55,7 +55,8 @@ class Model(nn.Module):
 
     def forward(
             self,
-            observations: torch.Tensor) -> DictWrapper[str, Any]:
+            observations: torch.Tensor,
+            observations_are_latents: bool = False) -> DictWrapper[str, Any]:
         """
 
         :param observations: [b, num_observations, num_channels, height, width]
@@ -74,16 +75,20 @@ class Model(nn.Module):
             [torch.randint(low=0, high=s - 1, size=[1]) for s in target_frames_indices], dim=0)
         conditioning_frames = observations[torch.arange(batch_size), conditioning_frames_indices]
 
-        # Encode observations to latent codes
-        with torch.no_grad():
-            self.ae.eval()
-            input_frames = torch.stack([target_frames, reference_frames, conditioning_frames], dim=1)
-            if self.config["autoencoder"]["type"] == "ours":
-                latents = self.ae(input_frames).latents
-            else:
-                flat_input_frames = rearrange(input_frames, "b n c h w -> (b n) c h w")
-                flat_latents = self.ae.encode(flat_input_frames)
-                latents = rearrange(flat_latents, "(b n) c h w -> b n c h w", n=3)
+        # Encode observations to latent codes (or assume observations already latents)
+        if observations_are_latents:
+            # observations are expected as [b, n, c, h, w] in latent space
+            latents = observations
+        else:
+            with torch.no_grad():
+                self.ae.eval()
+                input_frames = torch.stack([target_frames, reference_frames, conditioning_frames], dim=1)
+                if self.config["autoencoder"]["type"] == "ours":
+                    latents = self.ae(input_frames).latents
+                else:
+                    flat_input_frames = rearrange(input_frames, "b n c h w -> (b n) c h w")
+                    flat_latents = self.ae.encode(flat_input_frames)
+                    latents = rearrange(flat_latents, "(b n) c h w -> b n c h w", n=3)
         target_latents = latents[:, 0]
         reference_latents = latents[:, 1]
         conditioning_latents = latents[:, 2]
@@ -135,14 +140,32 @@ class Model(nn.Module):
         :param verbose: whether to display loading bar
         """
 
-        # Encode observations to latents
+        # Encode observations to latents (observations may already be latents)
         self.ae.eval()
-        if self.config["autoencoder"]["type"] == "ours":
-            latents = self.ae(observations).latents
+        if getattr(self, 'config', None) is not None and isinstance(observations, torch.Tensor):
+            # Heuristic: if channel count equals autoencoder output channels and spatial size equals state_res,
+            # assume observations are latents. Otherwise encode via AE.
+            try:
+                ae_out_ch = self.config["autoencoder"].get("encoder", {}).get("out_channels", None)
+            except Exception:
+                ae_out_ch = None
+
+        # Decide whether to treat observations as latents
+        treat_as_latents = False
+        if observations.ndim == 5:
+            c = observations.size(2)
+            if ae_out_ch is not None and c == ae_out_ch:
+                treat_as_latents = True
+
+        if treat_as_latents:
+            latents = observations
         else:
-            flat_input_frames = rearrange(observations, "b n c h w -> (b n) c h w")
-            flat_latents = self.ae.encode(flat_input_frames)
-            latents = rearrange(flat_latents, "(b n) c h w -> b n c h w", n=observations.size(1))
+            if self.config["autoencoder"]["type"] == "ours":
+                latents = self.ae(observations).latents
+            else:
+                flat_input_frames = rearrange(observations, "b n c h w -> (b n) c h w")
+                flat_latents = self.ae.encode(flat_input_frames)
+                latents = rearrange(flat_latents, "(b n) c h w -> b n c h w", n=observations.size(1))
 
         b, n, c, h, w = latents.shape
         if n == 1:

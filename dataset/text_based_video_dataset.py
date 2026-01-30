@@ -32,13 +32,16 @@ class TextBasedVideoDataset(Dataset):
         # Charger la liste des séquences depuis le fichier texte
         file_list_path = os.path.join(data_path, file_list)
         with open(file_list_path, 'r') as f:
-            self.sequence_names = [line.strip() for line in f.readlines()]
+            lines = [l.strip() for l in f.readlines() if l.strip()]
+        # accept formats: "filename", "filename 1", or "train/filename 1"
+        self.sequence_names = [os.path.basename(l.split()[0]) for l in lines]
         
-        # Dossier contenant les images
-        # Dossier contenant les images - detect train/ or test/ subdirectories
+        # Dossier contenant les images - detect train/val/test subdirectories
         if 'train' in file_list:
             self.images_dir = os.path.join(data_path, 'train')
-        elif 'test' in file_list or 'val' in file_list:
+        elif 'val' in file_list:
+            self.images_dir = os.path.join(data_path, 'val')
+        elif 'test' in file_list:
             self.images_dir = os.path.join(data_path, 'test')
         else:
             self.images_dir = os.path.join(data_path, 'images')        
@@ -57,24 +60,40 @@ class TextBasedVideoDataset(Dataset):
     def _scan_available_frames(self):
         """Scanne le dossier images pour trouver toutes les frames disponibles par vidéo"""
         video_frames = {}
-        
+
         # Parcourir les noms de séquences pour identifier les vidéos uniques
-        unique_videos = set()
-        for seq_name in self.sequence_names:
-            video_name = self.get_video_name(seq_name)
-            unique_videos.add(video_name)
-        
-        # Pour chaque vidéo unique, compter les frames disponibles
+        unique_videos = set(self.get_video_name(s) for s in self.sequence_names)
+
+        # Fast single-pass: lister once images_dir and group indices per video
+        try:
+            all_files = os.listdir(self.images_dir)
+        except FileNotFoundError:
+            return {v: {"indices": [], "max_idx": 0} for v in unique_videos}
+
+        temp_map = {}
+        for fname in all_files:
+            if not fname.endswith('.png'):
+                continue
+            if '_frame_' not in fname:
+                continue
+            video_name, tail = fname.rsplit('_frame_', 1)
+            # only keep videos we care about to save memory
+            if video_name not in unique_videos:
+                continue
+            idx_str = tail.replace('.png', '')
+            try:
+                idx = int(idx_str)
+            except ValueError:
+                continue
+            temp_map.setdefault(video_name, []).append(idx)
+
+        # Build final mapping
         for video_name in unique_videos:
-            frame_count = 0
-            for i in range(50):  # Chercher jusqu'à 50 frames max
-                frame_path = os.path.join(self.images_dir, f"{video_name}_frame_{i:04d}.png")
-                if os.path.exists(frame_path):
-                    frame_count = i + 1
-                else:
-                    break
-            video_frames[video_name] = max(frame_count, 18)  # Au moins 18 frames par défaut
-        
+            indices = temp_map.get(video_name, [])
+            indices = sorted(set(indices))
+            max_idx = indices[-1] if indices else 0
+            video_frames[video_name] = {"indices": indices, "max_idx": max_idx}
+
         return video_frames
 
     def __len__(self):
@@ -98,8 +117,11 @@ class TextBasedVideoDataset(Dataset):
         sequence_name = self.sequence_names[index]
         video_name = self.get_video_name(sequence_name)
         
-        # Déterminer le nombre de frames disponibles pour cette vidéo
-        total_frames = self.video_frames.get(video_name, 18)
+        # Déterminer les indices disponibles pour cette vidéo
+        vf_info = self.video_frames.get(video_name, {"indices": [], "max_idx": 0})
+        available_indices = vf_info.get("indices", [])
+        max_idx = vf_info.get("max_idx", 0)
+        total_frames = max_idx + 1 if max_idx >= 0 else 18
         
         # Si random_time, choisir un offset aléatoire
         if self.random_time:
@@ -113,23 +135,40 @@ class TextBasedVideoDataset(Dataset):
         
         # Charger les frames
         frames = []
+        # Helper: find nearest existing frame index using binary search
+        import bisect
+        def find_nearest(sorted_list, target):
+            if not sorted_list:
+                return None
+            pos = bisect.bisect_left(sorted_list, target)
+            if pos == 0:
+                return sorted_list[0]
+            if pos == len(sorted_list):
+                return sorted_list[-1]
+            before = sorted_list[pos - 1]
+            after = sorted_list[pos]
+            if abs(before - target) <= abs(after - target):
+                return before
+            else:
+                return after
+
         for frame_idx in range(self.frames_per_sample):
-            frame_num = time_offset + frame_idx
-            if frame_num >= total_frames:
-                frame_num = total_frames - 1  # Utiliser la dernière frame si on dépasse
-            
-            frame_path = os.path.join(
-                self.images_dir, 
-                f"{video_name}_frame_{frame_num:04d}.png"
-            )
-            
-            # Charger l'image
-            try:
-                img = Image.open(frame_path).convert("RGB")
-            except FileNotFoundError:
-                # Si la frame n'existe pas, créer une frame noire
-                print(f"Warning: Frame not found: {frame_path}")
+            desired_num = time_offset + frame_idx
+            if desired_num > max_idx:
+                desired_num = max_idx
+
+            nearest = find_nearest(available_indices, desired_num)
+            if nearest is None:
+                # no frames available for this video -> black frame
+                print(f"Warning: No frames found for video: {video_name}")
                 img = Image.new('RGB', (self.crop_size, self.crop_size), (0, 0, 0))
+            else:
+                frame_path = os.path.join(self.images_dir, f"{video_name}_frame_{nearest:04d}.png")
+                if not os.path.exists(frame_path):
+                    print(f"Warning: Frame not found (after nearest search): {frame_path}")
+                    img = Image.new('RGB', (self.crop_size, self.crop_size), (0, 0, 0))
+                else:
+                    img = Image.open(frame_path).convert("RGB")
             
             # Appliquer les transformations
             img_tensor = T.functional.to_tensor(img)
