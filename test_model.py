@@ -8,12 +8,26 @@ from lutils.configuration import Configuration
 from model import Model
 from torchvision import transforms
 
+
+def _pad_to_block(img, block=16):
+    """Pad image on right/bottom so both dimensions are divisible by `block`.
+    Returns a contiguous uint8 array."""
+    h, w = img.shape[:2]
+    new_h = ((h + block - 1) // block) * block
+    new_w = ((w + block - 1) // block) * block
+    pad_bottom = new_h - h
+    pad_right = new_w - w
+    if pad_bottom == 0 and pad_right == 0:
+        return np.ascontiguousarray(img)
+    padded = cv2.copyMakeBorder(img, 0, pad_bottom, 0, pad_right, cv2.BORDER_CONSTANT, value=[0, 0, 0])
+    return np.ascontiguousarray(padded)
+
 # --- Chemins spécifiques ---
 VIDEO_PATH = "/home/aoubaidi/Documents/Modelisation-panaches-de-fum-es-industrielles-par-Flow-Matching/smoke_videos/55710_0-7-2019-03-14-3544-899-4026-1381-180-180-9603-1552594030-1552594205.mp4"
-VQVAE_CKPT = "/home/aoubaidi/Documents/Modelisation-panaches-de-fum-es-industrielles-par-Flow-Matching/runs/vqvae_quicktestv1/vqvae_epoch_10.ckpt"
+VQVAE_CKPT = "runs/vqvae_quicktestv1/vqvae_epoch_10.ckpt"
 FLOW_CKPT = "/home/aoubaidi/Documents/Modelisation-panaches-de-fum-es-industrielles-par-Flow-Matching/runs/smoke_dataset_run-flow_run1/checkpoints/final_step_16800.pth"
 CONFIG_PATH = "configs/smoke_dataset.yaml" # Assure-toi que le chemin vers ta config est correct
-OUTPUT_NAME = "resultat_fumee_reelle.mp4"
+OUTPUT_NAME = "resultat_fume.mp4"
 OUTPUT_DIR = "runs/test_results_flow_run1"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -53,53 +67,47 @@ def load_checkpoints(model, flow_path, vqvae_path):
 
     sd = strip_module_prefix(sd)
 
-    # Try direct load first
+    target_keys = set(target_vq.state_dict().keys())
+    ck_keys = set(sd.keys())
+
+    has_backbone_target = any(k.startswith('backbone.') for k in target_keys)
+    has_backbone_ckpt = any(k.startswith('backbone.') for k in ck_keys)
+
+    # If the model expects 'backbone.' prefix but checkpoint doesn't, add it.
+    if has_backbone_target and not has_backbone_ckpt:
+        sd_prefixed = {('backbone.' + k): v for k, v in sd.items()}
+        try:
+            target_vq.load_state_dict(sd_prefixed)
+            print("VQ-VAE loaded by adding 'backbone.' prefix to checkpoint keys")
+            return
+        except Exception as e:
+            print(f"Load with added 'backbone.' prefix failed: {e}")
+
+    # If the checkpoint has 'backbone.' but the model doesn't, strip it.
+    if not has_backbone_target and has_backbone_ckpt:
+        sd_stripped = { (k[len('backbone.'): ] if k.startswith('backbone.') else k): v for k, v in sd.items() }
+        try:
+            target_vq.load_state_dict(sd_stripped)
+            print("VQ-VAE loaded by removing 'backbone.' prefix from checkpoint keys")
+            return
+        except Exception as e:
+            print(f"Load with removed 'backbone.' prefix failed: {e}")
+
+    # Fallback: try direct load first, then strict=False load
     try:
         target_vq.load_state_dict(sd)
         print("VQ-VAE loaded with strict=True")
         return
     except Exception as e:
-        print(f"Direct load failed: {e}")
+        print("Direct load failed (will try non-strict). Error:", str(e).splitlines()[0])
 
-    # Helper to remap prefixes
-    def remap_prefix(state_dict, prefix_from, prefix_to):
-        new = {}
-        for k, v in state_dict.items():
-            if k.startswith(prefix_from):
-                new_key = prefix_to + k[len(prefix_from):]
-            else:
-                new_key = k
-            new[new_key] = v
-        return new
-
-    target_keys = set(target_vq.state_dict().keys())
-    ck_keys = set(sd.keys())
-
-    # Try adding 'backbone.' prefix (common mismatch)
-    attempt = remap_prefix(sd, '', 'backbone.')
-    try:
-        target_vq.load_state_dict(attempt)
-        print("VQ-VAE loaded by adding 'backbone.' prefix to checkpoint keys")
-        return
-    except Exception:
-        pass
-
-    # Try removing 'backbone.' if present in ckpt
-    if any(k.startswith('backbone.') for k in sd.keys()):
-        attempt2 = remap_prefix(sd, 'backbone.', '')
-        try:
-            target_vq.load_state_dict(attempt2)
-            print("VQ-VAE loaded by removing 'backbone.' prefix from checkpoint keys")
-            return
-        except Exception:
-            pass
-
-    # Last resort: load with strict=False and report missing/unexpected keys
     try:
         res = target_vq.load_state_dict(sd, strict=False)
         print("VQ-VAE loaded with strict=False")
-        print("Missing keys:", res.missing_keys)
-        print("Unexpected keys:", res.unexpected_keys)
+        if getattr(res, 'missing_keys', None):
+            print(f"Missing keys: {len(res.missing_keys)} (use verbose to list)")
+        if getattr(res, 'unexpected_keys', None):
+            print(f"Unexpected keys: {len(res.unexpected_keys)} (use verbose to list)")
     except Exception as e:
         print("Failed to load VQ-VAE checkpoint:", e)
         raise
@@ -139,135 +147,169 @@ def process_video_and_bg(path, img_size):
     
     return frames_raw, frames_for_model, background, masks
 
+#!/usr/bin/env python3
+import os
+import cv2
+import numpy as np
+import torch
+import imageio
+from lutils.configuration import Configuration
+from model import Model
+
+OUTPUT_DIR_FRAMES = "runs/generated_smoke_frames"
+
+# --- FONCTIONS UTILITAIRES ---
+
+def _pad_to_block(img, block=16):
+    """Assure que les dimensions sont divisibles par 16 pour l'encodage vidéo."""
+    h, w = img.shape[:2]
+    new_h = ((h + block - 1) // block) * block
+    new_w = ((w + block - 1) // block) * block
+    if h == new_h and w == new_w: return img
+    return cv2.copyMakeBorder(img, 0, new_h - h, 0, new_w - w, cv2.BORDER_CONSTANT, value=[0, 0, 0])
+
+def load_checkpoints(model, flow_path, vqvae_path):
+    print(f"Chargement Flow Matching: {flow_path}")
+    ckpt = torch.load(flow_path, map_location="cpu")
+    model.load_state_dict(ckpt["model"] if "model" in ckpt else ckpt)
+    
+    print(f"Chargement VQ-VAE: {vqvae_path}")
+    vq_ckpt = torch.load(vqvae_path, map_location="cpu")
+    target_vq = model.ae if hasattr(model, 'ae') else model.vqvae
+    
+    sd = vq_ckpt['model'] if 'model' in vq_ckpt else vq_ckpt
+    # Nettoyage prefix module si présent
+    sd = {k.replace('module.', '', 1) if k.startswith('module.') else k: v for k, v in sd.items()}
+    
+    try:
+        target_vq.load_state_dict(sd, strict=False)
+        print("VQ-VAE chargé avec succès.")
+    except Exception as e:
+        print(f"Erreur chargement VQ-VAE: {e}")
+
+def process_video_and_bg(path, img_size):
+    cap = cv2.VideoCapture(path)
+    frames_raw = []
+    frames_for_model = []
+    masks = []
+    while len(frames_raw) < 100:
+        ret, frame = cap.read()
+        if not ret: break
+        frames_raw.append(frame)
+        
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb_resized = cv2.resize(rgb, (img_size, img_size))
+        frames_for_model.append(rgb_resized.astype(np.float32) / 255.0)
+    cap.release()
+    
+    # Background (médiane pour le calcul du masque de départ)
+    indices = np.linspace(0, len(frames_raw)-1, min(len(frames_raw), 30), dtype=int)
+    background = np.median(np.stack([frames_raw[i] for i in indices]), axis=0).astype(np.uint8)
+
+    for i, frame in enumerate(frames_raw):
+        diff = cv2.absdiff(frame, background)
+        gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        _, mask = cv2.threshold(gray, 30, 255, cv2.THRESH_BINARY)
+        masks.append(mask)
+    
+    return frames_raw, frames_for_model, background, masks
+
+# --- MAIN ---
+
 def main():
+    # Setup dossiers
+    os.makedirs(OUTPUT_DIR_FRAMES, exist_ok=True)
+    
     config = Configuration(CONFIG_PATH)
-    img_size = config["data"].get("input_size", 64)
+    img_size = 64  # Résolution cible 128x128
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 1. Initialisation Modèle
+    # 1. Initialisation
     model = Model(config["model"])
     load_checkpoints(model, FLOW_CKPT, VQVAE_CKPT)
     model.to(device).eval()
 
-    # 2. Préparation Data
-    raw_bgr, model_input, bg_bgr, masks = process_video_and_bg(VIDEO_PATH, img_size)
-    h_orig, w_orig = raw_bgr[0].shape[:2]
+    # 2. Data
+    raw_bgr, model_input, _, masks = process_video_and_bg(VIDEO_PATH, img_size)
+    # Frame 0 statique pour le décor de prédiction
+    base_static_bgr = cv2.resize(raw_bgr[0], (img_size, img_size))
 
-    # Tensor pour l'IA [1, K, C, H, W]
-    first_k = 10 
-    # Apply masks to create foreground inputs (outside mask -> black)
-    fg_inputs = []
+    # Contexte de 15 frames
+    first_k = 15 
+    fg_inputs_model = []
     for i in range(min(first_k, len(model_input))):
         m = masks[i]
-        # ensure mask matches model input resolution
-        if m is None:
-            mask_resized = np.zeros((img_size, img_size), dtype=np.uint8)
-        else:
-            mask_resized = cv2.resize(m, (img_size, img_size), interpolation=cv2.INTER_NEAREST)
+        mask_resized = cv2.resize(m, (img_size, img_size), interpolation=cv2.INTER_NEAREST) if m is not None else np.zeros((img_size, img_size), dtype=np.uint8)
         mask_norm = (mask_resized.astype(np.float32) / 255.0)[..., None]
         fg = model_input[i] * mask_norm
-        fg_inputs.append(fg)
+        fg_inputs_model.append(fg)
 
-    if len(fg_inputs) == 0:
-        raise RuntimeError('No frames to initialize from video')
-
-    # Convert to tensor and to model expected range [-1,1]
-    init_np = np.stack(fg_inputs)  # [K, H, W, C] in [0,1]
-    init_np = init_np * 2.0 - 1.0
-    init_tensor = torch.from_numpy(init_np).permute(0, 3, 1, 2).unsqueeze(0).to(device)
+    init_np = np.stack(fg_inputs_model) 
+    init_tensor = torch.from_numpy(init_np * 2.0 - 1.0).permute(0, 3, 1, 2).unsqueeze(0).to(device)
 
     # 3. Génération
-    print("Génération de la fumée...")
+    print(f"Génération (Context: {first_k} frames)...")
     with torch.no_grad():
-        # Génère 30 frames après les 10 premières
-        generated = model.generate_frames(init_tensor, num_frames=30)
-        full_seq = torch.cat([init_tensor, generated], dim=1)[0] # [T, C, H, W]
+        generated = model.generate_frames(init_tensor, num_frames=45)
+        # Tronquer si le modèle répète l'input
+        if generated.shape[1] >= first_k:
+            generated = generated[:, first_k:]
+        full_seq = torch.cat([init_tensor, generated], dim=1)[0]
 
-    # 4. Recomposition + save frames
-    final_video = []
+    # 4. Traitement des frames et Vidéo
     side_by_side_frames = []
-    print("Correction couleurs et fusion sur background...")
+    print(f"Sauvegarde des frames dans {OUTPUT_DIR_FRAMES}")
 
     for t in range(full_seq.shape[0]):
-        # Sortie IA (en float, couleurs inversées)
-        img_ia = full_seq[t].permute(1, 2, 0).cpu().numpy()
-        img_ia = (np.clip(img_ia, 0, 1) * 255).astype(np.uint8)
+        # Post-process Prédiction (Sortie directe IA en RGB)
+        img_ia_float = full_seq[t].permute(1, 2, 0).cpu().numpy()
+        img_ia_float = np.clip((img_ia_float + 1.0) / 2.0, 0, 1)
+        img_ia_u8 = (img_ia_float * 255).astype(np.uint8)
         
-        # img_ia is already RGB (0-255)
-        smoke_res = cv2.resize(img_ia, (w_orig, h_orig))
+        # --- SAUVEGARDE IMAGE INDIVIDUELLE ---
+        imageio.imwrite(os.path.join(OUTPUT_DIR_FRAMES, f"prediction_{t:04d}.png"), img_ia_u8)
+        # Save original frame (RGB) for comparison
+        try:
+            imageio.imwrite(os.path.join(OUTPUT_DIR_FRAMES, f"original_{t:04d}.png"), left_rgb)
+        except Exception:
+            # fallback: save the base static if original not available
+            imageio.imwrite(os.path.join(OUTPUT_DIR_FRAMES, f"original_{t:04d}.png"), cv2.cvtColor(base_static_bgr, cv2.COLOR_BGR2RGB))
 
-        # Original frame (RGB) for t if exists
+        # Préparation BGR pour OpenCV
+        smoke_bgr = cv2.cvtColor(img_ia_u8, cv2.COLOR_RGB2BGR)
+
+        # GAUCHE : Vidéo normale
         if t < len(raw_bgr):
-            orig_bgr = raw_bgr[t]
-            orig_rgb = cv2.cvtColor(orig_bgr, cv2.COLOR_BGR2RGB)
+            left_bgr = cv2.resize(raw_bgr[t], (img_size, img_size))
         else:
-            orig_rgb = cv2.cvtColor(bg_bgr, cv2.COLOR_BGR2RGB)
+            left_bgr = base_static_bgr
+        left_rgb = cv2.cvtColor(left_bgr, cv2.COLOR_BGR2RGB)
 
-        # Save original frame
-        orig_path = os.path.join(OUTPUT_DIR, "frames_original", f"frame_{t:04d}.png")
-        imageio.imwrite(orig_path, orig_rgb)
-
-        # Déterminer le masque pour cette image (redimensionner le masque existant
-        # ou le calculer à partir de la prédiction si absent)
-        if t < len(masks) and masks[t] is not None:
-            mask = masks[t]
+        # DROITE : Normal jusqu'à 15, puis Prediction sur Frame 0
+        if t < first_k:
+            right_rgb = left_rgb
         else:
-            # smoke_res est en RGB (0-255)
-            gray_smoke = cv2.cvtColor(smoke_res, cv2.COLOR_RGB2GRAY)
-            _, mask = cv2.threshold(gray_smoke, 10, 255, cv2.THRESH_BINARY)
+            # Composition sur la frame 0 statique
+            combined_bgr = cv2.add(base_static_bgr, smoke_bgr)
+            right_rgb = cv2.cvtColor(combined_bgr, cv2.COLOR_BGR2RGB)
+            cv2.putText(
+                right_rgb,                # Image cible
+                "PREDICTION",             # Le texte
+                (5, 15),                  # Position (x, y) en haut à gauche
+                cv2.FONT_HERSHEY_SIMPLEX, # Police de caractères
+                0.4,                      # Échelle (taille de la police, petit pour du 64x64)
+                (0, 255, 0),              # Couleur (Vert vif RGB)
+                1,                        # Épaisseur du trait
+                cv2.LINE_AA               # Anti-aliasing pour lisser le texte
+            )
+            # -------------
+        # Side-by-Side
+        sbs = np.concatenate([left_rgb, right_rgb], axis=1)
+        side_by_side_frames.append(_pad_to_block(sbs, block=16))
 
-        # Assurer que le masque a la même taille que le background
-        if mask.shape != bg_bgr.shape[:2]:
-            mask = cv2.resize(mask, (bg_bgr.shape[1], bg_bgr.shape[0]), interpolation=cv2.INTER_NEAREST)
-
-        # Convertir la fumée prédite en BGR pour les opérations OpenCV
-        smoke_bgr = cv2.cvtColor(smoke_res, cv2.COLOR_RGB2BGR)
-
-        # Composite predicted over static background
-        mask_inv = cv2.bitwise_not(mask)
-        bg_part = cv2.bitwise_and(bg_bgr, bg_bgr, mask=mask_inv)
-        fg_part = cv2.bitwise_and(smoke_bgr, smoke_bgr, mask=mask)
-        final_frame = cv2.add(bg_part, fg_part)
-
-        # Save predicted composite full frame (RGB)
-        pred_rgb = cv2.cvtColor(final_frame, cv2.COLOR_BGR2RGB)
-        pred_path = os.path.join(OUTPUT_DIR, "frames_predicted", f"pred_{t:04d}.png")
-        imageio.imwrite(pred_path, pred_rgb)
-
-        # --- FUSION (utiliser masque si disponible sinon threshold sur prédiction) ---
-        if t < len(masks):
-            mask = masks[t]
-        else:
-            gray_smoke = cv2.cvtColor(smoke_res, cv2.COLOR_BGR2GRAY)
-            _, mask = cv2.threshold(gray_smoke, 10, 255, cv2.THRESH_BINARY)
-
-        # Save foreground original and predicted (both RGB)
-        orig_fg = cv2.bitwise_and(orig_rgb, orig_rgb, mask=mask)
-        fg_orig_path = os.path.join(OUTPUT_DIR, "frames_fg_original", f"fg_orig_{t:04d}.png")
-        imageio.imwrite(fg_orig_path, orig_fg)
-
-        fg_pred = cv2.bitwise_and(pred_rgb, pred_rgb, mask=mask)
-        fg_pred_path = os.path.join(OUTPUT_DIR, "frames_fg_predicted", f"fg_pred_{t:04d}.png")
-        imageio.imwrite(fg_pred_path, fg_pred)
-
-        # final_video expects RGB frames
-        final_video.append(pred_rgb)
-
-        # Side-by-side: original | predicted composite
-        sbs = np.concatenate([orig_rgb, pred_rgb], axis=1)
-        sbs_path = os.path.join(OUTPUT_DIR, "side_by_side", f"sbs_{t:04d}.png")
-        imageio.imwrite(sbs_path, sbs)
-        side_by_side_frames.append(sbs)
-
-    # 5. Sauvegarde
-    # Save composite video (original background + predicted foreground)
-    imageio.mimsave(OUTPUT_NAME, final_video, fps=15)
-    # Save side-by-side comparison video
-    sbs_out = os.path.join(OUTPUT_DIR, "comparison_side_by_side.mp4")
-    imageio.mimsave(sbs_out, side_by_side_frames, fps=15)
-
-    print(f"Terminé ! Vidéo sauvegardée sous : {OUTPUT_NAME}")
-    print(f"Side-by-side saved: {sbs_out}")
+    # 5. Save Video
+    imageio.mimsave(OUTPUT_NAME, side_by_side_frames, fps=15)
+    print(f"Extraction et vidéo terminées : {OUTPUT_NAME}")
 
 if __name__ == "__main__":
     main()

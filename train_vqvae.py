@@ -23,6 +23,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True, help="Path to config file")
     parser.add_argument("--run-name", type=str, required=True, help="Name of the run")
+    parser.add_argument("--output-dir", type=str, default=None, help="Optional output directory (overrides runs/* path)")
     parser.add_argument("--test-image", type=str, help="Path to a specific image to test every epoch")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--num-workers", type=int, default=4)
@@ -39,7 +40,10 @@ def train_vqvae():
     
     # --- Setup ---
     config = Configuration(args.config)
-    output_dir = Path("runs") / f"vqvae_{args.run_name}"
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+    else:
+        output_dir = Path("runs") / f"vqvae_{args.run_name}"
     recons_dir = output_dir / "reconstructions"
     output_dir.mkdir(parents=True, exist_ok=True)
     recons_dir.mkdir(parents=True, exist_ok=True)
@@ -101,17 +105,23 @@ def train_vqvae():
                              num_workers=args.num_workers, pin_memory=True)
     
     # --- Model ---
-    vqvae_config = DictWrapper({
-        "encoder": {"in_channels": 3, "out_channels": 4, "mid_channels": 32},
-        "decoder": {"in_channels": 4, "out_channels": 3, "mid_channels": 32},
-        "vector_quantizer": {
-            "embedding_dimension": 4,
-            "num_embeddings": 16384,
-            "commitment_cost": 0.25
-        }
+# --- Model (Updated to use YAML config) ---
+# We map the YAML structure to the format build_vqvae expects
+    vqvae_params = DictWrapper({
+        "encoder": {
+            "in_channels": 3,
+            "out_channels": config["encoder"]["out_channels"], 
+            "mid_channels": config["encoder"]["mid_channels"]
+        },
+        "decoder": {
+            "in_channels": config["encoder"]["out_channels"],
+            "out_channels": 3,
+            "mid_channels": config["decoder"]["mid_channels"]
+        },
+        "vector_quantizer": config["vector_quantizer"]
     })
-    
-    vqvae = build_vqvae(vqvae_config).to(device)
+
+    vqvae = build_vqvae(vqvae_params).to(device)
     optimizer = AdamW(vqvae.parameters(), lr=args.lr, weight_decay=1e-6)
     
     history = {"train_loss": [], "train_eval_loss": [], "val_loss": [], "test_loss": []}
@@ -126,14 +136,27 @@ def train_vqvae():
             for i, frames in enumerate(loader):
                 if frames.dim() == 5: frames = frames.squeeze(1)
                 frames = frames.to(device)
+# --- Replacement Loss Logic ---
                 output = vqvae(frames)
                 recon = output.reconstructed_images
-                recon_loss = F.mse_loss(recon, frames, reduction='sum')
+
+                # Create a weight map based on pixel intensity (0 to 1)
+                # Smoke pixels are brighter than the background [-1, 1] range
+                with torch.no_grad():
+                    # Use max across RGB channels to find the smoke "signal"
+                    weights = (frames.max(dim=1, keepdim=True)[0] + 1.0) / 2.0
+                    # Boost weight for faint smoke so the model doesn't ignore it
+                    weights = torch.pow(weights, 0.5) 
+
+                # Apply weighted MSE
+                sq_error = (recon - frames) ** 2
+                recon_loss = (sq_error * weights).sum() / (weights.sum() + 1e-8)
+
                 vq_loss = getattr(output, 'vq_loss', 0.0)
-                # If vq_loss is tensor, sum it
                 if isinstance(vq_loss, torch.Tensor):
                     vq_loss = vq_loss.sum().item()
-                total += recon_loss.item() + vq_loss
+
+                total += float(recon_loss.item() if isinstance(recon_loss, torch.Tensor) else recon_loss) + vq_loss
                 count += frames.size(0)
 
                 if i == 0:
@@ -167,9 +190,18 @@ def train_vqvae():
             frames = frames.cuda()
             
             output = vqvae(frames)
-            recon_loss = F.mse_loss(output.reconstructed_images, frames)
+            recon = output.reconstructed_images
+            # Masked reconstruction loss during training: ignore near-black pixels
+            mask = (frames > -0.99).any(dim=1)  # [B, H, W]
+            if mask.sum() > 0:
+                mask_expand = mask.unsqueeze(1).float()
+                sq = (recon - frames) ** 2
+                recon_loss = (sq * mask_expand).sum() / mask_expand.sum()
+            else:
+                recon_loss = F.mse_loss(recon, frames, reduction='mean')
+
             vq_loss = output.vq_loss
-            total_loss = recon_loss + vq_loss
+            total_loss = recon_loss + (vq_loss if not isinstance(vq_loss, torch.Tensor) else vq_loss.sum())
             
             optimizer.zero_grad()
             total_loss.backward()

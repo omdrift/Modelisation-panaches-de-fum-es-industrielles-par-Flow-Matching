@@ -13,7 +13,7 @@ config = DictWrapper({
 })
 
 vqvae = build_vqvae(config, convert_to_sequence=False)
-vqvae.load_from_ckpt("/home/aoubaidi/Documents/Modelisation-panaches-de-fum-es-industrielles-par-Flow-Matching/runs/vqvae_smoke_vqvae_test/vqvae_epoch_55.ckpt")
+vqvae.load_from_ckpt("vqvae_epoch_5.ckpt")
 vqvae.eval()
 
 # Charger frame originale
