@@ -2,35 +2,35 @@ name: "smoke_dataset"
 
 data:
   data_root: /home/aoubaidi/Documents/Modelisation-panaches-de-fum-es-industrielles-par-Flow-Matching/final_dataset
-  input_size: 64
-  crop_size: 64
+  input_size: 128
+  crop_size: 128
   frames_per_sample: 10  # Réduit
   random_horizontal_flip: True
 
 model:
-  sigma: 0.0000001
+  sigma: 0.001  # Small noise for flow matching stability
   vector_field_regressor:
-    state_size: 4
-    state_res: [8, 8]    # DOIT CORRESPONDRE AU VQVAE !
-    inner_dim: 128       # Très réduit (était 256)
-    depth: 2
-    mid_depth: 2
-    out_norm: "ln"
+    state_size: 256      # Must match VQVAE embedding_dimension (256)
+    state_res: [16, 16]    # 128x128 images -> 16x16 latent spatial resolution
+    inner_dim: 512       # Internal dimension for transformer
+    depth: 6             # Temporal modeling depth (smoke evolution)
+    mid_depth: 2         # Mid-block depth
+    out_norm: "ln"       # Layer normalization
   autoencoder:
     type: "ours"
-    ckpt_path: /home/aoubaidi/Documents/Modelisation-panaches-de-fum-es-industrielles-par-Flow-Matching/runs/vqvae_quicktestv1/vqvae_epoch_10.ckpt
+    ckpt_path: /home/aoubaidi/Documents/Modelisation-panaches-de-fum-es-industrielles-par-Flow-Matching/runs/vqvae_vqvae_masked_finetune/vqvae_epoch_25.ckpt
     encoder:
       in_channels: 3
-      out_channels: 4
-      mid_channels: 32
+      out_channels: 256
+      mid_channels: 128
     decoder:
-      in_channels: 4
+      in_channels: 256
       out_channels: 3
-      mid_channels: 32
+      mid_channels: 128
     vector_quantizer:
-      embedding_dimension: 4
-      num_embeddings: 16384
-      commitment_cost: 0.25
+      embedding_dimension: 256
+      num_embeddings: 1024
+      commitment_cost: 0.1
 
 training:
   batching:
@@ -41,7 +41,7 @@ training:
     weight_decay: 0.000005
     num_warmup_steps: 1000
     # Set to target ~10 epochs: dataset_size (128680) * 10
-    num_training_steps: 16800
+    num_training_steps: 100000
   num_observations: 10   # Réduit
   condition_frames: 1
   frames_to_generate: 9  # Réduit

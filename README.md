@@ -1,7 +1,7 @@
 # Modélisation des panaches de fumées industrielles — Flow Matching
 
 Ce dépôt contient le code et les ressources pour la modélisation des panaches de fumées industrielles, basé notamment sur des approches VQGAN et Flow Matching.
-
+## Quelques exemples de travaux 
 Prérequis
 - Conda (ou mamba) et pilotes NVIDIA installés (vérifier avec `nvidia-smi`).
 - Python 3.9+
@@ -9,7 +9,6 @@ Prérequis
 Environnement
 Utilisez le fichier `env.yml` pour créer l'environnement recommandé :
 
-```bash
 # avec conda
 conda env create -f env.yml -n smoke
 
@@ -114,7 +113,6 @@ python dataset_init.py        # télécharger vidéos sélectionnées
 python prepare_dataset.py     # extraire et isoler frames
 python organize_dataset.PY    # organiser, renommer et créer splits
 python split_labels.py        # vérifier les frames manquantes
-# (optionnel) python dataset/convert_to_h5.py
 ```
 
 Modifier les chemins et paramètres directement dans les scripts ou via les fichiers de configuration YAML selon vos besoins.
@@ -201,6 +199,5 @@ Fichiers utiles
 - `env.yml` : configuration de l'environnement
 - `metadata_02242020.json` : métadonnées pour le téléchargement des vidéos
 
-Pour toute question ou si vous souhaitez que je reformule certaines sections en anglais ou que j'ajoute un sommaire détaillé, dites-le moi.
 
 

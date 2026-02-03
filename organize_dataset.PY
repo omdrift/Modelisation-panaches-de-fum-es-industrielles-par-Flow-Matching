@@ -1,80 +1,66 @@
 import os
-import shutil
-import json
-import random
-from glob import glob
+import torch
+import cv2
+import numpy as np
+from PIL import Image
 from tqdm import tqdm
 
-def organize_dataset(src_root, dst_root, train_ratio=0.8, val_ratio=0.1):
-    # 1. Setup Target Directories
-    train_path = os.path.join(dst_root, "train")
-    test_path = os.path.join(dst_root, "test")
-    val_path = os.path.join(dst_root, "val")
-    os.makedirs(train_path, exist_ok=True)
-    os.makedirs(test_path, exist_ok=True)
-    os.makedirs(val_path, exist_ok=True)
+# Load the RVM model
+# We use ResNet50 for higher precision on wispy smoke textures
+model = torch.hub.load("PeterL1n/RobustVideoMatting", "resnet50")
+model.load_state_dict(torch.load("rvm_resnet50.pth"))
+model = model.eval().cuda() # Ensure you have a GPU
 
-    # List all video folders, excluding hidden/internal folders
-    video_folders = [f for f in os.listdir(src_root) if os.path.isdir(os.path.join(src_root, f)) and not f.startswith('_')]
-    random.seed(42) # For reproducibility
-    random.shuffle(video_folders) 
-
-    if train_ratio + val_ratio >= 1.0:
-        raise ValueError("train_ratio + val_ratio must be less than 1.0")
-
-    split_idx1 = int(len(video_folders) * train_ratio)
-    split_idx2 = split_idx1 + int(len(video_folders) * val_ratio)
-
-    train_folders = video_folders[:split_idx1]
-    val_folders = video_folders[split_idx1:split_idx2]
-    test_folders = video_folders[split_idx2:]
-
-    stats = {"train": {}, "val": {}, "test": {}}
+def process_smoke_dataset(input_dir, output_root):
+    video_files = [f for f in os.listdir(input_dir) if f.endswith(('.mp4', '.avi', '.mov'))]
     
-    train_labels = []
-    val_labels = []
-    test_labels = []
+    # Create output directories
+    os.makedirs(output_root, exist_ok=True)
 
-    def process_split(folders, target_dir, split_name, label_list):
-        print(f"Processing split: {split_name}...")
-        for video_id in tqdm(folders):
-            src_dir = os.path.join(src_root, video_id)
-            frames = sorted(glob(os.path.join(src_dir, "*.png")))
-            
-            stats[split_name][video_id] = len(frames)
-            
-            for frame_path in frames:
-                frame_name = os.path.basename(frame_path)
-                new_name = f"{video_id}_{frame_name}"
-                dst_file = os.path.join(target_dir, new_name)
-                
-                shutil.copy(frame_path, dst_file)
-                
-                # store only the filename (TextBasedVideoDataset expects bare sequence names)
-                label_list.append(f"{new_name}")
+    for video_name in tqdm(video_files, desc="Processing Videos"):
+        video_path = os.path.join(input_dir, video_name)
+        cap = cv2.VideoCapture(video_path)
+        
+        # Prepare output subfolder for this video
+        video_id = os.path.splitext(video_name)[0]
+        save_path = os.path.join(output_root, video_id)
+        os.makedirs(save_path, exist_ok=True)
 
-    process_split(train_folders, train_path, "train", train_labels)
-    process_split(val_folders, val_path, "val", val_labels)
-    process_split(test_folders, test_path, "test", test_labels)
+        # RVM needs to keep track of state across frames
+        rec_state = [None] * 4 
+        frame_idx = 0
 
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-    with open(os.path.join(dst_root, "dataset_stats.json"), "w") as f:
-        json.dump(stats, f, indent=4)
+            # Convert BGR to RGB and normalize to [0, 1]
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            src = torch.from_numpy(frame_rgb).permute(2, 0, 1).float().unsqueeze(0).cuda() / 255.0
 
-    # Save train.txt, val.txt, test.txt
-    with open(os.path.join(dst_root, "train.txt"), "w") as f:
-        f.write("\n".join(train_labels))
+            # Inference
+            with torch.no_grad():
+                # fgr = foreground, pha = alpha matte
+                fgr, pha, *rec_state = model(src, *rec_state, downsample_ratio=0.25)
 
-    with open(os.path.join(dst_root, "val.txt"), "w") as f:
-        f.write("\n".join(val_labels))
+            # Convert back to CPU/Numpy
+            fgr = fgr.squeeze().permute(1, 2, 0).cpu().numpy()
+            pha = pha.squeeze().cpu().numpy()
 
-    with open(os.path.join(dst_root, "test.txt"), "w") as f:
-        f.write("\n".join(test_labels))
+            # Create RGBA Image
+            # Using the predicted foreground (fgr) is better than the original frame
+            # because RVM cleans up the color at the edges of the alpha
+            rgba = np.zeros((fgr.shape[0], fgr.shape[1], 4), dtype=np.uint8)
+            rgba[:, :, :3] = (fgr * 255).astype(np.uint8)
+            rgba[:, :, 3] = (pha * 255).astype(np.uint8)
 
+            # Save frame
+            img = Image.fromarray(rgba, 'RGBA')
+            img.save(os.path.join(save_path, f"frame_{frame_idx:04d}.png"))
+            frame_idx += 1
 
-    print(f"Labels saved: train.txt ({len(train_labels)} lines), val.txt ({len(val_labels)} lines) and test.txt ({len(test_labels)} lines)")
+        cap.release()
 
-SOURCE_DIR = "isolated_smoke_frames/"
-DEST_DIR = "final_dataset/"
-
-organize_dataset(SOURCE_DIR, DEST_DIR)
+if __name__ == "__main__":
+    process_smoke_dataset('smoke_videos', 'final_dataset/raw_rgba')

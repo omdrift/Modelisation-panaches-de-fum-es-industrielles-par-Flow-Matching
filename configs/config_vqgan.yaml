@@ -1,0 +1,47 @@
+name: "vqvae_smoke"
+
+# Configuration de l'encodeur : Augmentation des canaux pour plus de détails
+encoder:
+  in_channels: 3
+  out_channels: 256 # Aligné avec l'embedding_dimension pour l'espace latent
+  mid_channels: 128 # Augmenté de 32 à 128 pour capturer plus de textures
+
+# Configuration du décodeur
+decoder:
+  in_channels: 256
+  out_channels: 3
+  mid_channels: 128
+
+# Bottleneck de quantification vectorielle
+vector_quantizer:
+  embedding_dimension: 256
+  num_embeddings: 1024  # Dictionnaire riche pour éviter la généralisation au noir
+  commitment_cost: 0.1  # Réduit pour une meilleure flexibilité du codebook
+
+# Paramètres de données
+data:
+  data_root: "final_dataset/"
+  input_size: 128  # Increased from 64 for better smoke detail
+  crop_size: 128   # Increased from 64
+  random_horizontal_flip: True
+
+# Hyperparamètres d'entraînement optimisés
+training:
+  batch_size: 32        # Reduced for 128x128 resolution (uses more memory)
+  learning_rate: 2e-4   # Ajusté pour la nouvelle capacité
+  weight_decay: 1e-6    #
+  epochs: 100
+# Minimal model & evaluation entries required by project
+model:
+  reference: True
+
+evaluation:
+  past_horizon: -1
+  warm_sampling: 0.0
+  steps: 100
+
+notes:
+  - "This config is aligned with train_vqvae.py and smoke_dataset_optimized.yaml"
+  - "Input/output: 128x128 images -> 16x16 latent space (state_res in smoke_dataset_optimized.yaml)"
+  - "Latent channels: 256 (state_size in smoke_dataset_optimized.yaml)"
+  - "Downsampling factor: 8x (128/16 = 8)"
