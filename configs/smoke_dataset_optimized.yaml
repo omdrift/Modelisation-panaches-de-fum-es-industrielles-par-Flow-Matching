@@ -1,0 +1,74 @@
+name: "smoke_dataset_optimized"
+
+# OPTIMIZED CONFIGURATION FOR SMOKE PREDICTION
+# This config addresses resolution, temporal context, and model capacity issues
+
+data:
+  data_root: /home/aoubaidi/Documents/Modelisation-panaches-de-fum-es-industrielles-par-Flow-Matching/final_dataset
+  input_size: 64               # Keep 64 to match VQVAE training
+  crop_size: 64                # Keep 64 to match VQVAE training
+  frames_per_sample: 16        # INCREASED from 10 - longer temporal context
+  random_horizontal_flip: True
+
+model:
+  sigma: 0.001                 # INCREASED from 1e-7 - better stability
+  vector_field_regressor:
+    state_size: 256            # Must match VQVAE embedding_dimension
+    state_res: [8, 8]          # Must match VQVAE latent size (64x64 -> 8x8)
+    inner_dim: 512             # INCREASED from 256 - more capacity
+    depth: 6                   # INCREASED from 4 - better temporal modeling
+    mid_depth: 2
+    out_norm: "ln"
+  autoencoder:
+    type: "ours"
+    ckpt_path: /home/aoubaidi/Documents/Modelisation-panaches-de-fum-es-industrielles-par-Flow-Matching/runs/vqvae_vqvae_masked_finetune/vqvae_epoch_25.ckpt
+    encoder:
+      in_channels: 3
+      out_channels: 256
+      mid_channels: 128
+    decoder:
+      in_channels: 256
+      out_channels: 3
+      mid_channels: 128
+    vector_quantizer:
+      embedding_dimension: 256
+      num_embeddings: 1024
+      commitment_cost: 0.1
+
+training:
+  batching:
+    batch_size: 24             # Optimized for 64x64 resolution
+    num_workers: 4             # INCREASED from 2 - better data loading
+  optimizer:
+    learning_rate: 0.0001
+    weight_decay: 0.000005
+    num_warmup_steps: 2000     # INCREASED from 1000 - smoother warmup
+    num_training_steps: 100000 # INCREASED from 16800 - much more training
+  num_observations: 16         # INCREASED from 10 - uses all frames
+  condition_frames: 2          # INCREASED from 1 - more context
+  frames_to_generate: 14       # Generate remaining frames
+  loss_weights:
+    flow_matching_loss: 1.0
+
+evaluation:
+  batching:
+    batch_size: 8              # Optimized for 64x64 resolution
+    num_workers: 2
+    observations_count: 16     # Match training
+    skip_frames: 0
+    observation_stacking: 1
+  num_observations: 16
+  condition_frames: 2
+  frames_to_generate: 14
+  steps: 50
+
+# KEY IMPROVEMENTS (optimized for 64x64 VQVAE):
+# 1. Resolution: Kept at 64x64 (matches trained VQVAE checkpoint)
+# 2. Temporal context: 10 → 16 frames (longer sequences)
+# 3. Model depth: 4 → 6 layers (better temporal modeling)
+# 4. Model capacity: 256 → 512 inner_dim (more expressive)
+# 5. Training steps: 16.8k → 100k (proper convergence)
+# 6. Sigma: 1e-7 → 1e-3 (numerical stability)
+# 7. Conditioning: 1 → 2 frames (richer context)
+#
+# NOTE: To use 128x128 resolution, you must first retrain VQVAE at that resolution

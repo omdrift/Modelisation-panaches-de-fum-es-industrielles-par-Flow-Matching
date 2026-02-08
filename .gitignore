@@ -22,18 +22,27 @@ rad.json
 TestResults.
 
 .venv
-
+smoke_frames_2
 data/
 
 __pycache__ 
-
+*.pth
+*.ckpt
 runs_vqvae
 
-
+runs_vqgan
+wandb
 training
 final_dataset
-
+smoke_frames
 smoke_videos
 
 isolated_smoke_frame
 runs
+presentation_*
+
+runs_vqgan
+runs_vqvae
+presentation_figures1
+presentation_figures
+smoke_frames 
