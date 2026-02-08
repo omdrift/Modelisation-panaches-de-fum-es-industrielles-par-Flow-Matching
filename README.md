@@ -1,52 +1,15 @@
 # Modélisation des panaches de fumées industrielles — Flow Matching
 
 Ce dépôt contient le code et les ressources pour la modélisation des panaches de fumées industrielles, basé notamment sur des approches VQGAN et Flow Matching.
-## Quelques exemples de travaux
-
-- Vidéo originale (résolution standard 180×180) :
-<table border="0">
-  <tr>
-    <td>
-      <p align="center"><b>Source (180x180)</b></p>
-      <video src="media/6_0-0-2018-06-11-6304-964-6807-1467-180-180-3470-1528712115-1528712290.mp4" width="60" ></video>
-    </td>
-    <td>
-      <p align="center"><b>Reconstruction VQ-VAE</b></p>
-      <img src="./media/custom_recon_epoch_56.png" width="250" alt="Reconstruction VQ-VAE">
-    </td>
-  </tr>
-</table>
-
-- Extraction et traitement des masques de segmentation pour l'entraînement du modèle.
-<p align="center">
-  <img src="/media/6_0-0-2018-06-11-6304-964-6807-1467-180-180-3470-1528712115-1528712290_frame_0001.png" width="180" alt="Segmentation Frame">
-</p>
-  
-  Prérequis
+## Quelques exemples de travaux 
+Prérequis
 - Conda (ou mamba) et pilotes NVIDIA installés (vérifier avec `nvidia-smi`).
 - Python 3.9+
 
 Environnement
-Utilisez le fichier `env.yml` pour créer l'environnement recommandé :
+Utilisez le fichier `environment.yml` pour créer l'environnement recommandé :
 
-```bash
-# avec conda
-conda env create -f env.yml -n smoke
-
-# ou plus rapide avec mamba
-mamba env create -f env.yml -n smoke
-
-conda activate smoke
-```
-
-Installation minimale (packages utiles)
-
-```bash
-pip install requests pandas
-```
-
-
-Pour lancer l'entrainement Utiliser le fichier environment.yml 
+environment.yml 
 ```bash
 conda env create -f environment.yml 
 
