@@ -26,10 +26,11 @@ smoke_frames_2
 data/
 
 __pycache__ 
-
+*.pth
 runs_vqvae
 
-
+runs_vqgan
+wandb
 training
 final_dataset
 smoke_frames
@@ -37,3 +38,4 @@ smoke_videos
 
 isolated_smoke_frame
 runs
+presentation_*
