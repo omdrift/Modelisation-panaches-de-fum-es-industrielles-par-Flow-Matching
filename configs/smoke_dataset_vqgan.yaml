@@ -1,0 +1,66 @@
+name: "smoke_dataset_vqgan"
+
+data:
+  data_root: /home/aoubaidi/Documents/Modelisation-panaches-de-fum-es-industrielles-par-Flow-Matching/final_dataset
+  input_size: 64
+  crop_size: 64
+  frames_per_sample: 16  # Predict 16 frames for better smoke dynamics
+  random_horizontal_flip: True
+
+model:
+  sigma: 0.001  # Small noise for flow matching stability
+  vector_field_regressor:
+    state_size: 256      # Must match VQGAN embedding_dimension (256)
+    state_res: [8, 8]    # 64x64 images -> 8x8 latent spatial resolution
+    inner_dim: 512       # Internal dimension for transformer
+    depth: 6             # Temporal modeling depth (smoke evolution)
+    mid_depth: 2         # Mid-block depth
+    out_norm: "ln"       # Layer normalization
+  autoencoder:
+    type: "ours"
+    # VQGAN checkpoint trained with adversarial loss
+    ckpt_path: /home/aoubaidi/Documents/Modelisation-panaches-de-fum-es-industrielles-par-Flow-Matching/runs_vqgan/vqgan_smoke_vqgan_v2/vqgan_epoch_45.ckpt
+    encoder:
+      in_channels: 3
+      out_channels: 256
+      mid_channels: 128
+    decoder:
+      in_channels: 256
+      out_channels: 3
+      mid_channels: 128
+    vector_quantizer:
+      embedding_dimension: 256
+      num_embeddings: 1024
+      commitment_cost: 0.1
+
+training:
+  batching:
+    batch_size: 24        # Optimized for 64x64
+    num_workers: 2
+  optimizer:
+    learning_rate: 0.0001
+    weight_decay: 0.000005
+    num_warmup_steps: 1000
+    # Target ~60 epochs: dataset_size (128680) * 60 / batch_size (24) ≈ 100k steps
+    num_training_steps: 150000
+  num_observations: 10   # First 10 frames used for conditioning
+  condition_frames: 1    # Use 1 reference frame
+  frames_to_generate: 6  # Generate next 6 frames (10+6=16 total)
+  loss_weights:
+    flow_matching_loss: 1.0
+  # Smoke-specific weighting: focus loss on smoke regions vs background
+  smoke_weight: 5.0      # Weight for pixels with smoke (5x more important)
+  background_weight: 1.0 # Weight for background pixels
+  smoke_threshold: 0.1   # Threshold in latent space to detect smoke
+
+evaluation:
+  batching:
+    batch_size: 1
+    num_workers: 2
+    observations_count: 10
+    skip_frames: 0
+    observation_stacking: 1
+  num_observations: 10
+  condition_frames: 1
+  frames_to_generate: 9
+  steps: 500  # More steps for better generation quality with VQGAN

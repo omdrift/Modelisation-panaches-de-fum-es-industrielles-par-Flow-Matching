@@ -101,6 +101,11 @@ class Model(nn.Module):
         # Calculate target vectors
         target_vectors = (target_latents - (1 - self.sigma) * input_latents) / (1 - (1 - self.sigma) * timestamps)
 
+        # Create smoke mask: identify non-black regions in target frames
+        # Mask pixels where smoke is present (L2 norm > threshold in latent space)
+        smoke_threshold = self.config.get("smoke_threshold", 0.1)
+        smoke_mask = (target_latents.norm(dim=1, keepdim=True) > smoke_threshold).float()  # [b, 1, h, w]
+        
         # Calculate time distances
         index_distances = (reference_frames_indices - conditioning_frames_indices).to(input_latents.device)
 
@@ -118,7 +123,8 @@ class Model(nn.Module):
 
             # Data for loss calculation
             reconstructed_vectors=reconstructed_vectors,
-            target_vectors=target_vectors)
+            target_vectors=target_vectors,
+            smoke_mask=smoke_mask)
 
     @torch.no_grad()
     def generate_frames(

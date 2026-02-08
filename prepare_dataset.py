@@ -86,7 +86,7 @@ def generate_optimized_smoke_dataset(input_dir, output_dir, intensity_gain=1.2, 
     cv2.destroyAllWindows()
 
 # Paramètres de lancement
-INPUT_DIR = "smoke_videos"
-OUTPUT_DIR = "smoke_frames/"
+INPUT_DIR = "videos"
+OUTPUT_DIR = "frames/"
 
 generate_optimized_smoke_dataset(INPUT_DIR, OUTPUT_DIR, intensity_gain=1.3)

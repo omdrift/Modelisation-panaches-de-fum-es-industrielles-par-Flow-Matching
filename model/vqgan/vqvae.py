@@ -29,17 +29,26 @@ class VQVAE(nn.Module):
     def load_from_ckpt(self, ckpt_path: str):
         loaded_state = torch.load(ckpt_path, map_location="cpu")
 
+        # Handle different checkpoint formats
+        if "model" in loaded_state:
+            model_state = loaded_state["model"]
+        elif "vqvae" in loaded_state:
+            model_state = loaded_state["vqvae"]
+        else:
+            # Assume checkpoint is the state dict itself
+            model_state = loaded_state
+
         is_ddp = False
-        for k in loaded_state["model"]:
+        for k in model_state:
             if k.startswith("module"):
                 is_ddp = True
                 break
         
         # Nettoyer le préfixe "module." si présent
         if is_ddp:
-            state = {k.replace("module.", ""): v for k, v in loaded_state["model"].items()}
+            state = {k.replace("module.", ""): v for k, v in model_state.items()}
         else:
-            state = loaded_state["model"]
+            state = model_state
         
         # Charger directement dans self (pas besoin de wrapper)
         self.load_state_dict(state)

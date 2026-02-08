@@ -7,25 +7,9 @@ Prérequis
 - Python 3.9+
 
 Environnement
-Utilisez le fichier `env.yml` pour créer l'environnement recommandé :
+Utilisez le fichier `environment.yml` pour créer l'environnement recommandé :
 
-# avec conda
-conda env create -f env.yml -n smoke
-
-# ou plus rapide avec mamba
-mamba env create -f env.yml -n smoke
-
-conda activate smoke
-```
-
-Installation minimale (packages utiles)
-
-```bash
-pip install requests pandas
-```
-
-
-Pour lancer l'entrainement Utiliser le fichier environment.yml 
+environment.yml 
 ```bash
 conda env create -f environment.yml 
 

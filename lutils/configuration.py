@@ -18,15 +18,27 @@ class Configuration(DictWrapper):
         self.check_config()
 
     def check_config(self):
+        # Initialize data section if it doesn't exist
+        if "data" not in self:
+            self["data"] = {}
+            
         if "max_num_videos" not in self["data"]:
             self["data"]["max_num_videos"] = None
 
         if "offset" not in self["data"]:
             self["data"]["offset"] = None
 
+        # Initialize model section if it doesn't exist
+        if "model" not in self:
+            self["model"] = {}
+            
         if "reference" not in self["model"]:
             self["model"]["reference"] = True
 
+        # Initialize evaluation section if it doesn't exist
+        if "evaluation" not in self:
+            self["evaluation"] = {}
+            
         if "past_horizon" not in self["evaluation"]:
             self["evaluation"]["past_horizon"] = -1
 

@@ -9,7 +9,7 @@ This document explains how to train flow matching for smoke prediction using the
 Raw Videos → Smoke Extraction → VQVAE Encoding → Flow Matching Training → Smoke Prediction
 ```
 
-### Stage 1: Data Preparation (Already Done ✅)
+### Stage 1: Data Preparation
 Your smoke frames are already extracted and organized in `final_dataset/`:
 - **Train**: 128,680 frames
 - **Val**: 15,818 frames  
@@ -17,13 +17,13 @@ Your smoke frames are already extracted and organized in `final_dataset/`:
 
 Each frame is an extracted smoke region (64x64 RGB) on black background.
 
-### Stage 2: VQVAE Training (Already Done ✅)
+### Stage 2: VQVAE/VQGAN Training 
 You have trained VQVAE checkpoints:
 - Checkpoint: `runs/vqvae_vqvae_masked_finetune/vqvae_epoch_25.ckpt`
 - Encoding: 64×64 RGB image → 8×8×256 latent representation
 - This compresses each frame to a compact latent code `z`
 
-**Key Point**: VQVAE is frozen during flow matching training. It only serves as an encoder/decoder.
+**Key Point**: VQVAE/VQGAN is frozen during flow matching training. It only serves as an encoder/decoder.
 
 ### Stage 3: Flow Matching Training (RIVER Algorithm)
 

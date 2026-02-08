@@ -15,14 +15,14 @@ decoder:
 # Bottleneck de quantification vectorielle
 vector_quantizer:
   embedding_dimension: 256
-  num_embeddings: 1024  # Dictionnaire riche pour éviter la généralisation au noir
+  num_embeddings: 1024 
   commitment_cost: 0.1  # Réduit pour une meilleure flexibilité du codebook
 
 # Paramètres de données
 data:
-  data_root: "final_dataset/"
-  input_size: 128  # Increased from 64 for better smoke detail
-  crop_size: 128   # Increased from 64
+  data_root: "final_dataset"
+  input_size: 64  
+  crop_size: 64   
   random_horizontal_flip: True
 
 # Hyperparamètres d'entraînement optimisés
