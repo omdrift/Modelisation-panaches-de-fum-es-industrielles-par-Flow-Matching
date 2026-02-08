@@ -1,43 +1,79 @@
 import os
 import shutil
+import json
+import random
+from glob import glob
 from tqdm import tqdm
 
-def organize_by_view_id(smoke_videos_dir):
-    if not os.path.exists(smoke_videos_dir):
-        print(f"Error: {smoke_videos_dir} not found.")
-        return
+def organize_dataset(src_root, dst_root, train_ratio=0.8, val_ratio=0.1):
+    # 1. Setup Target Directories
+    train_path = os.path.join(dst_root, "train")
+    test_path = os.path.join(dst_root, "test")
+    val_path = os.path.join(dst_root, "val")
+    os.makedirs(train_path, exist_ok=True)
+    os.makedirs(test_path, exist_ok=True)
+    os.makedirs(val_path, exist_ok=True)
 
-    video_files = [f for f in os.listdir(smoke_videos_dir) if f.endswith('.mp4')]
-    print(f"Organizing {len(video_files)} videos...")
+    # List all video folders, excluding hidden/internal folders
+    video_folders = [f for f in os.listdir(src_root) if os.path.isdir(os.path.join(src_root, f)) and not f.startswith('_')]
+    random.seed(42) # For reproducibility
+    random.shuffle(video_folders) 
 
-    for filename in tqdm(video_files):
-        try:
-            # 1. Split at the first underscore: '174_0-0-2018...' -> ['174', '0-0-2018...']
-            after_first_underscore = filename.split('_', 1)[1]
+    if train_ratio + val_ratio >= 1.0:
+        raise ValueError("train_ratio + val_ratio must be less than 1.0")
+
+    split_idx1 = int(len(video_folders) * train_ratio)
+    split_idx2 = split_idx1 + int(len(video_folders) * val_ratio)
+
+    train_folders = video_folders[:split_idx1]
+    val_folders = video_folders[split_idx1:split_idx2]
+    test_folders = video_folders[split_idx2:]
+
+    stats = {"train": {}, "val": {}, "test": {}}
+    
+    train_labels = []
+    val_labels = []
+    test_labels = []
+
+    def process_split(folders, target_dir, split_name, label_list):
+        print(f"Processing split: {split_name}...")
+        for video_id in tqdm(folders):
+            src_dir = os.path.join(src_root, video_id)
+            frames = sorted(glob(os.path.join(src_dir, "*.png")))
             
-            # 2. Split that result by hyphens to get the first two parts: '0' and '0'
-            parts = after_first_underscore.split('-')
-            view_id = f"{parts[0]}-{parts[1]}" # This creates '0-0', '2-1', etc.
+            stats[split_name][video_id] = len(frames)
             
-            # 3. Define the folder based on the view_id
-            target_folder = os.path.join(smoke_videos_dir, f"view_{view_id}")
-            
-            if not os.path.exists(target_folder):
-                os.makedirs(target_folder)
-            
-            # 4. Move the video
-            shutil.move(os.path.join(smoke_videos_dir, filename), 
-                        os.path.join(target_folder, filename))
-                        
-        except (IndexError, ValueError):
-            print(f"Skipping file with naming anomaly: {filename}")
-            continue
+            for frame_path in frames:
+                frame_name = os.path.basename(frame_path)
+                new_name = f"{video_id}_{frame_name}"
+                dst_file = os.path.join(target_dir, new_name)
+                
+                shutil.copy(frame_path, dst_file)
+                
+                label_list.append(f"{split_name}/{new_name} 1")
 
-    print("\nFolders organized by View ID.")
+    process_split(train_folders, train_path, "train", train_labels)
+    process_split(val_folders, val_path, "val", val_labels)
+    process_split(test_folders, test_path, "test", test_labels)
 
-if __name__ == "__main__":
 
-    target_path = '/home/aoubaidi/Documents/Modelisation-panaches-de-fum-es-industrielles-par-Flow-Matching/smoke_videos'
+    with open(os.path.join(dst_root, "dataset_stats.json"), "w") as f:
+        json.dump(stats, f, indent=4)
 
-    organize_by_view_id(target_path)
-    # Ensure this path matches your environment
+    # Save train.txt, val.txt, test.txt
+    with open(os.path.join(dst_root, "train.txt"), "w") as f:
+        f.write("\n".join(train_labels))
+
+    with open(os.path.join(dst_root, "val.txt"), "w") as f:
+        f.write("\n".join(val_labels))
+
+    with open(os.path.join(dst_root, "test.txt"), "w") as f:
+        f.write("\n".join(test_labels))
+
+
+    print(f"Labels saved: train.txt ({len(train_labels)} lines), val.txt ({len(val_labels)} lines) and test.txt ({len(test_labels)} lines)")
+
+SOURCE_DIR = "smoke_frames/"
+DEST_DIR = "final_dataset/"
+
+organize_dataset(SOURCE_DIR, DEST_DIR)
