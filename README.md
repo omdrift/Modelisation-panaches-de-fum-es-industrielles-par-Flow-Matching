@@ -24,11 +24,11 @@ Résultats de génération de séquences de fumée avec le modèle Flow Matching
   <tr>
     <td align="center">
       <b>Vidéos Réelles</b><br>
-      <img src="wandb/latest-run/files/media/videos/Training/Media/real_videos_109999_c99bc7aa458f1f121210.gif" width="300" alt="Vidéos réelles">
+      <img src="real_videos_109999_c99bc7aa458f1f121210.gif" width="300" alt="Vidéos réelles">
     </td>
     <td align="center">
       <b>Vidéos Générées</b><br>
-      <img src="wandb/latest-run/files/media/videos/Training/Media/generated_videos_109999_f96b7834ed7ac1939875.gif" width="300" alt="Vidéos générées">
+      <img src="generated_videos_109999_f96b7834ed7ac1939875.gif" width="300" alt="Vidéos générées">
     </td>
   </tr>
 </table>
