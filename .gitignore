@@ -27,6 +27,7 @@ data/
 
 __pycache__ 
 *.pth
+*.ckpt
 runs_vqvae
 
 runs_vqgan
