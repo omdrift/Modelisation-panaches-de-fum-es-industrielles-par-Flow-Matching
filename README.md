@@ -8,14 +8,14 @@ Ce dépôt contient le code et les ressources pour la modélisation des panaches
 Comparaison entre les images originales et leurs reconstructions par le VQGAN :
 
 <p align="center">
-  <img src="vqgan_reconstruction_comparison.png" width="800" alt="Comparaison reconstruction VQGAN">
+  <img src="media/vqgan_reconstruction_comparison.png" width="800" alt="Comparaison reconstruction VQGAN">
 </p>
 
 ### Génération de séquences vidéo
 Résultats de génération de séquences de fumée avec le modèle Flow Matching :
 
 <p align="center">
-  <img src="figure5_generation.png" width="800" alt="Génération de séquences">
+  <img src="media/figure5_generation.png" width="800" alt="Génération de séquences">
 </p>
 
 ### Comparaison vidéos réelles vs générées
@@ -24,11 +24,11 @@ Résultats de génération de séquences de fumée avec le modèle Flow Matching
   <tr>
     <td align="center">
       <b>Vidéos Réelles</b><br>
-      <img src="real_videos_109999_c99bc7aa458f1f121210.gif" width="300" alt="Vidéos réelles">
+      <img src="media/real_videos_109999_c99bc7aa458f1f121210.gif" width="300" alt="Vidéos réelles">
     </td>
     <td align="center">
       <b>Vidéos Générées</b><br>
-      <img src="generated_videos_109999_f96b7834ed7ac1939875.gif" width="300" alt="Vidéos générées">
+      <img src="media/generated_videos_109999_f96b7834ed7ac1939875.gif" width="300" alt="Vidéos générées">
     </td>
   </tr>
 </table>
