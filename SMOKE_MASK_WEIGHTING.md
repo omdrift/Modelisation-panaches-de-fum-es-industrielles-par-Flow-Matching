@@ -91,10 +91,10 @@ Le système log automatiquement dans wandb:
 
 Avec le masque activé:
 
-✅ **Plus de détails dans la fumée** : le modèle se concentre sur les structures importantes  
-✅ **Moins de "hallucinations"** : moins de fumée générée sur le fond noir  
-✅ **Meilleure cohérence temporelle** : les mouvements de fumée sont mieux appris  
-✅ **Convergence plus rapide** : le modèle apprend plus efficacement  
+ **Plus de détails dans la fumée** : le modèle se concentre sur les structures importantes  
+ **Moins de "hallucinations"** : moins de fumée générée sur le fond noir  
+ **Meilleure cohérence temporelle** : les mouvements de fumée sont mieux appris  
+ **Convergence plus rapide** : le modèle apprend plus efficacement  
 
 ## Tests
 

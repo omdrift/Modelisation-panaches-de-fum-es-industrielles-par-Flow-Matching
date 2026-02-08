@@ -56,7 +56,7 @@ smoke_threshold: 0.08  # If smoke is subtle
 smoke_threshold: 0.15  # If only strong smoke matters
 ```
 
-### 3. 🎯 Temporal Conditioning Strategy
+### 3.  Temporal Conditioning Strategy
 
 **RIVER uses**: Reference frame (τ-1) + Random context frame (c < τ-2)
 
@@ -73,7 +73,7 @@ condition_frames: 1     # Use reference + 1 random context
 
 **Recommendation**: Keep this as-is. RIVER's distributed conditioning is specifically designed for motion prediction.
 
-### 4. 🚀 Warm-Start Sampling (Optional Speedup)
+### 4.  Warm-Start Sampling (Optional Speedup)
 
 From RIVER paper (Figure 3), you can start sampling from t=0.1 instead of t=0:
 
@@ -104,7 +104,7 @@ generated = model.generate_frames(
 
 **Trade-off**: `warm_start=0.1` speeds up by 10% with minimal quality loss (may even improve FVD per RIVER paper).
 
-### 5. 📊 Smoke-Specific Metrics
+### 5.  Smoke-Specific Metrics
 
 **Add to trainer.py** logging:
 
@@ -143,7 +143,7 @@ def calculate_loss(self, results):
     return loss, auxiliary_output
 ```
 
-### 6. 🎨 Data Augmentation for Smoke
+### 6.  Data Augmentation for Smoke
 
 **Current augmentation** ([configs/smoke_dataset_vqgan.yaml](configs/smoke_dataset_vqgan.yaml#L8)):
 ```yaml
@@ -176,13 +176,8 @@ class SmokeAugmentation:
         return frames.clamp(0, 1)
 ```
 
-**Why these matter**:
-- ✅ Horizontal flip: OK, smoke source can be on left or right
-- ✅ Brightness/contrast: Smoke opacity varies with lighting
-- ❌ Rotation: NO - smoke source position is fixed (e.g., chimney location)
-- ❌ Vertical flip: NO - smoke always rises upward (physics!)
 
-### 7. 🔍 Monitor Training Health
+### 7.  Monitor Training Health
 
 **Key metrics to watch**:
 
@@ -200,7 +195,7 @@ class SmokeAugmentation:
    - Check if smoke motion is smooth
    - Check if background stays black
 
-### 8. 🎯 Hyperparameter Recommendations
+### 8.  Hyperparameter Recommendations
 
 Based on your 64x64 VQGAN and smoke data:
 
@@ -216,23 +211,23 @@ training:
   smoke_threshold: 0.1          # Calibrate with visualize_smoke_threshold.py
   
   # Temporal context
-  num_observations: 10          # ✅ Good: captures smoke evolution
-  condition_frames: 1           # ✅ Good: reference + context (RIVER default)
-  frames_to_generate: 6         # ✅ Good: predict 6 frames ahead
+  num_observations: 10          #  Good: captures smoke evolution
+  condition_frames: 1           #  Good: reference + context (RIVER default)
+  frames_to_generate: 6         #  Good: predict 6 frames ahead
   
 model:
-  sigma: 0.001                  # ✅ Good: stable for 64x64 latents
+  sigma: 0.001                  #        Good: stable for 64x64 latents
   vector_field_regressor:
-    state_size: 256             # ✅ Matches VQGAN embedding
-    state_res: [8, 8]           # ✅ Matches 64→8x8 compression
-    inner_dim: 512              # ✅ Good capacity for smoke dynamics
-    depth: 6                    # ✅ Good temporal modeling
+    state_size: 256             #  Matches VQGAN embedding
+    state_res: [8, 8]           #  Matches 64→8x8 compression
+    inner_dim: 512              #  Good capacity for smoke dynamics
+    depth: 6                    #  Good temporal modeling
 
 evaluation:
   steps: 100                    # Can try 50 with warm_start=0.1
 ```
 
-### 9. 🐛 Common Issues & Solutions
+### 9.  Common Issues & Solutions
 
 | Issue | Cause | Solution |
 |-------|-------|----------|
@@ -242,7 +237,7 @@ evaluation:
 | Blurry smoke | Not enough denoising steps | Increase `evaluation.steps` to 150 |
 | Mode collapse | Learning rate too high | Reduce `learning_rate` to 5e-5 |
 
-### 10. 📝 Training Command
+### 10.  Training Command
 
 ```bash
 # Full training with smoke-specific config
@@ -264,11 +259,11 @@ python train.py \
 
 Your implementation already has the **most critical adaptation** (smoke mask weighting). Additional improvements:
 
-1. ✅ **Already implemented**: Weighted loss, temporal conditioning, VQGAN encoding
-2. 🔧 **Calibrate**: Run `visualize_smoke_threshold.py` to optimize threshold
-3. 📊 **Monitor**: Add smoke-specific logging (smoke_loss, bg_loss, ratio)
-4. 🚀 **Optimize**: Try `warm_start=0.1` for faster inference
-5. 🎨 **Augment**: Add brightness/contrast (but NOT rotation/vertical flip)
+1.  **Already implemented**: Weighted loss, temporal conditioning, VQGAN encoding
+2.  **Calibrate**: Run `visualize_smoke_threshold.py` to optimize threshold
+3.  **Monitor**: Add smoke-specific logging (smoke_loss, bg_loss, ratio)
+4.  **Optimize**: Try `warm_start=0.1` for faster inference
+5.  **Augment**: Add brightness/contrast (but NOT rotation/vertical flip)
 
 The RIVER algorithm is well-suited for smoke because:
 - Distributed conditioning captures wind/source information
