@@ -1,1 +1,9 @@
-from .model import Model
+"""Model package; load the full Flow Matching model only when requested."""
+
+
+def __getattr__(name):
+    if name == "Model":
+        from .model import Model
+
+        return Model
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -72,7 +72,8 @@ def train_vqgan():
     if args.output_dir:
         output_dir = Path(args.output_dir)
     else:
-        output_dir = Path("runs_vqgan") / f"vqgan_{args.run_name}"
+        run_directory = args.run_name if args.run_name.startswith("vqgan_") else f"vqgan_{args.run_name}"
+        output_dir = Path("runs_vqgan") / run_directory
     recons_dir = output_dir / "reconstructions"
     checkpoints_dir = output_dir / "checkpoints"
     output_dir.mkdir(parents=True, exist_ok=True)

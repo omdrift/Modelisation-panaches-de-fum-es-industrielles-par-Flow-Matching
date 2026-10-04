@@ -2,9 +2,10 @@
 import os
 import numpy as np
 import torch
-from PIL import Image
 from torch.utils.data import Dataset
-from torchvision import transforms as T
+
+from dataset.augmentations import build_frame_transform, load_frame
+from dataset.sampling import sample_temporal_indices
 
 
 class TextBasedVideoDataset(Dataset):
@@ -20,7 +21,9 @@ class TextBasedVideoDataset(Dataset):
             crop_size: int,
             frames_per_sample: int = 18,
             random_horizontal_flip: bool = True,
-            random_time: bool = True):
+            random_time: bool = True,
+            skip_short_videos: bool = False,
+            skip_frames: int = 1):
         
         self.data_path = data_path
         self.input_size = input_size
@@ -28,6 +31,8 @@ class TextBasedVideoDataset(Dataset):
         self.frames_per_sample = frames_per_sample
         self.random_horizontal_flip = random_horizontal_flip
         self.random_time = random_time
+        self.skip_short_videos = skip_short_videos
+        self.skip_frames = skip_frames
         
         # Charger la liste des séquences depuis le fichier texte
         file_list_path = os.path.join(data_path, file_list)
@@ -35,6 +40,12 @@ class TextBasedVideoDataset(Dataset):
             lines = [l.strip() for l in f.readlines() if l.strip()]
         # accept formats: "filename", "filename 1", or "train/filename 1"
         self.sequence_names = [os.path.basename(l.split()[0]) for l in lines]
+        if self.frames_per_sample > 1:
+            # Split files list every frame. Flow Matching samples one clip per video.
+            first_name_by_video = {}
+            for sequence_name in self.sequence_names:
+                first_name_by_video.setdefault(self.get_video_name(sequence_name), sequence_name)
+            self.sequence_names = list(first_name_by_video.values())
         
         # Dossier contenant les images - detect train/val/test subdirectories
         if 'train' in file_list:
@@ -48,12 +59,32 @@ class TextBasedVideoDataset(Dataset):
         # Construire un mapping des vidéos et leurs frames disponibles
         print(f"Scanning available frames...")
         self.video_frames = self._scan_available_frames()
+
+        if self.frames_per_sample > 1:
+            required = 1 + (self.frames_per_sample - 1) * self.skip_frames
+            short_video_ids = {
+                video_name
+                for video_name, info in self.video_frames.items()
+                if len(info.get("indices", [])) < required
+            }
+            if short_video_ids and self.skip_short_videos:
+                before = len(self.sequence_names)
+                self.sequence_names = [
+                    name for name in self.sequence_names
+                    if self.get_video_name(name) not in short_video_ids
+                ]
+                print(
+                    f"Skipped {len(short_video_ids)} videos shorter than {required} frames "
+                    f"({before - len(self.sequence_names)} clip entries)."
+                )
+            if not self.sequence_names:
+                raise ValueError(
+                    f"No videos in {file_list} have the {required} frames needed "
+                    f"for a {self.frames_per_sample}-frame sample"
+                )
         
         # Transformations
-        self.transform = T.Compose([
-            T.Resize(size=self.input_size, antialias=True),
-            T.CenterCrop(size=self.crop_size),
-        ])
+        self.transform = build_frame_transform(self.input_size, self.crop_size)
         
         print(f"Dataset loaded: {len(self.sequence_names)} sequences from {len(self.video_frames)} videos")
 
@@ -117,73 +148,26 @@ class TextBasedVideoDataset(Dataset):
         sequence_name = self.sequence_names[index]
         video_name = self.get_video_name(sequence_name)
         
-        # Déterminer les indices disponibles pour cette vidéo
+        # Determine the available indices for this video.
         vf_info = self.video_frames.get(video_name, {"indices": [], "max_idx": 0})
         available_indices = vf_info.get("indices", [])
-        max_idx = vf_info.get("max_idx", 0)
-        total_frames = max_idx + 1 if max_idx >= 0 else 18
-        
-        # Si random_time, choisir un offset aléatoire
-        if self.random_time:
-            max_offset = max(0, total_frames - self.frames_per_sample)
-            time_offset = np.random.randint(0, max_offset + 1) if max_offset > 0 else 0
-        else:
-            time_offset = 0
-        
-        # Déterminer si on fait un flip horizontal
+        if not available_indices:
+            raise ValueError(f"No readable frames found for video '{video_name}'")
+
+        # Apply one shared augmentation decision to every frame in the clip.
         flip_p = np.random.rand() < 0.5 if self.random_horizontal_flip else False
-        
-        # Charger les frames
+        sampled_indices = sample_temporal_indices(
+            available_indices,
+            self.frames_per_sample,
+            random_time=self.random_time,
+            stride=self.skip_frames,
+        )
+
         frames = []
-        # Helper: find nearest existing frame index using binary search
-        import bisect
-        def find_nearest(sorted_list, target):
-            if not sorted_list:
-                return None
-            pos = bisect.bisect_left(sorted_list, target)
-            if pos == 0:
-                return sorted_list[0]
-            if pos == len(sorted_list):
-                return sorted_list[-1]
-            before = sorted_list[pos - 1]
-            after = sorted_list[pos]
-            if abs(before - target) <= abs(after - target):
-                return before
-            else:
-                return after
+        for frame_idx in sampled_indices:
+            frame_path = os.path.join(self.images_dir, f"{video_name}_frame_{frame_idx:04d}.png")
+            if not os.path.isfile(frame_path):
+                raise FileNotFoundError(f"Frame listed for video '{video_name}' is missing: {frame_path}")
+            frames.append(load_frame(frame_path, self.transform, horizontal_flip=flip_p))
 
-        for frame_idx in range(self.frames_per_sample):
-            desired_num = time_offset + frame_idx
-            if desired_num > max_idx:
-                desired_num = max_idx
-
-            nearest = find_nearest(available_indices, desired_num)
-            if nearest is None:
-                # no frames available for this video -> black frame
-                print(f"Warning: No frames found for video: {video_name}")
-                img = Image.new('RGB', (self.crop_size, self.crop_size), (0, 0, 0))
-            else:
-                frame_path = os.path.join(self.images_dir, f"{video_name}_frame_{nearest:04d}.png")
-                if not os.path.exists(frame_path):
-                    print(f"Warning: Frame not found (after nearest search): {frame_path}")
-                    img = Image.new('RGB', (self.crop_size, self.crop_size), (0, 0, 0))
-                else:
-                    img = Image.open(frame_path).convert("RGB")
-            
-            # Appliquer les transformations
-            img_tensor = T.functional.to_tensor(img)
-            img_tensor = self.transform(img_tensor)
-            
-            # Flip horizontal si nécessaire
-            if flip_p:
-                img_tensor = T.functional.hflip(img_tensor)
-            
-            frames.append(img_tensor)
-        
-        # Empiler toutes les frames
-        video = torch.stack(frames, dim=0)
-        
-        # Normaliser de [0, 1] à [-1, 1]
-        video = video * 2.0 - 1.0
-        
-        return video
+        return torch.stack(frames, dim=0)

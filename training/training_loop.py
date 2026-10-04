@@ -13,6 +13,8 @@ from lutils.configuration import Configuration
 from lutils.distributed import setup_torch_distributed
 from lutils.logger import Logger
 from model.model import Model
+from training.checkpoints import load_checkpoint as _load_checkpoint
+from training.checkpoints import save_checkpoint as _save_checkpoint
 from training.trainer import Trainer
 
 
@@ -32,10 +34,15 @@ def _resolve_split_file(data_root: str, split: str) -> str:
 def _build_dataset(config: Configuration, split: str, random_time: bool):
     data_cfg = config["data"]
     train_cfg = config["training"]
-    frames_per_sample = max(
-        int(data_cfg.get("frames_per_sample", train_cfg.get("num_observations", 10))),
-        int(train_cfg.get("num_observations", 10)),
-    )
+    if split == "train":
+        # The current objective selects its target from the observed training window.
+        frames_per_sample = int(train_cfg.get("num_observations", 10))
+    else:
+        eval_cfg = config["evaluation"]
+        evaluation_window = int(eval_cfg.get("num_observations", 10)) + int(
+            eval_cfg.get("frames_to_generate", 0)
+        )
+        frames_per_sample = max(int(data_cfg.get("frames_per_sample", 0)), evaluation_window)
 
     return TextBasedVideoDataset(
         data_path=data_cfg["data_root"],
@@ -45,6 +52,7 @@ def _build_dataset(config: Configuration, split: str, random_time: bool):
         frames_per_sample=frames_per_sample,
         random_horizontal_flip=bool(data_cfg.get("random_horizontal_flip", False)) and split == "train",
         random_time=random_time,
+        skip_short_videos=frames_per_sample > 1,
     )
 
 
@@ -54,30 +62,6 @@ def _set_seed(seed: int, rank: int):
     np.random.seed(final_seed)
     torch.manual_seed(final_seed)
     torch.cuda.manual_seed_all(final_seed)
-
-
-def _save_checkpoint(model, optimizer, scheduler, run_dir: Path, step: int):
-    checkpoints_dir = run_dir / "checkpoints"
-    checkpoints_dir.mkdir(parents=True, exist_ok=True)
-    state = {
-        "step": step,
-        "model": model.module.state_dict() if isinstance(model, nn.parallel.DistributedDataParallel) else model.state_dict(),
-        "optimizer": optimizer.state_dict(),
-        "scheduler": scheduler.state_dict(),
-    }
-    torch.save(state, checkpoints_dir / f"step_{step}.pth")
-
-
-def _load_checkpoint(model, optimizer, scheduler, ckpt_path: Path, device: torch.device) -> int:
-    loaded = torch.load(ckpt_path, map_location=device)
-    state = loaded.get("model", loaded)
-    dmodel = model.module if isinstance(model, nn.parallel.DistributedDataParallel) else model
-    dmodel.load_state_dict(state, strict=False)
-    if "optimizer" in loaded:
-        optimizer.load_state_dict(loaded["optimizer"])
-    if "scheduler" in loaded:
-        scheduler.load_state_dict(loaded["scheduler"])
-    return int(loaded.get("step", 0))
 
 
 def train(rank: int, args: ArgsNamespace, temp_dir: str):
@@ -93,7 +77,9 @@ def train(rank: int, args: ArgsNamespace, temp_dir: str):
     train_dataset = _build_dataset(config, split="train", random_time=True)
     val_dataset = _build_dataset(config, split="val", random_time=False)
 
-    model = Model(config["model"]).to(device)
+    model_config = config["model"]
+    model_config["smoke_threshold"] = float(config["training"].get("smoke_threshold", 0.1))
+    model = Model(model_config).to(device)
     if args.num_gpus > 1:
         model = nn.parallel.DistributedDataParallel(model, device_ids=[rank], output_device=rank)
 

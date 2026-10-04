@@ -2,12 +2,17 @@ from typing import Any
 
 import torch
 import torch.nn as nn
-from einops import rearrange
-from torchdiffeq import odeint
+try:
+    from torchdiffeq import odeint
+except ImportError:
+    from model.ode import odeint
 from tqdm import tqdm
 
 from lutils.configuration import Configuration
 from lutils.dict_wrapper import DictWrapper
+from model.autoencoder_adapter import AutoencoderAdapter
+from model.conditioning import ConditioningSampler
+from model.flow_matching import FlowMatchingObjective
 from model.vector_field_regressor import build_vector_field_regressor
 from model.vqgan.taming.autoencoder import vq_f8_ddconfig, vq_f8_small_ddconfig, vq_f16_ddconfig, VQModelInterface
 from model.vqgan.vqvae import build_vqvae
@@ -19,6 +24,11 @@ class Model(nn.Module):
 
         self.config = config
         self.sigma = config["sigma"]
+        self.conditioning_sampler = ConditioningSampler()
+        self.flow_matching_objective = FlowMatchingObjective(
+            sigma=self.sigma,
+            smoke_threshold=float(config.get("smoke_threshold", 0.1)),
+        )
 
         if config["autoencoder"]["type"] == "ours":
             self.ae = build_vqvae(
@@ -33,6 +43,7 @@ class Model(nn.Module):
             else:
                 ae_config = vq_f16_ddconfig
             self.ae = VQModelInterface(ae_config, config["autoencoder"]["ckpt_path"])
+        self.autoencoder = AutoencoderAdapter(self.ae, config["autoencoder"]["type"])
 
         self.vector_field_regressor = build_vector_field_regressor(
             config=self.config["vector_field_regressor"])
@@ -66,14 +77,15 @@ class Model(nn.Module):
         num_observations = observations.size(1)
         assert num_observations > 2
 
-        # Sample target frames and conditioning
-        target_frames_indices = torch.randint(low=2, high=num_observations, size=[batch_size])
-        target_frames = observations[torch.arange(batch_size), target_frames_indices]
-        reference_frames_indices = target_frames_indices - 1
-        reference_frames = observations[torch.arange(batch_size), reference_frames_indices]
-        conditioning_frames_indices = torch.cat(
-            [torch.randint(low=0, high=s - 1, size=[1]) for s in target_frames_indices], dim=0)
-        conditioning_frames = observations[torch.arange(batch_size), conditioning_frames_indices]
+        sampled_indices = self.conditioning_sampler.sample(
+            batch_size=batch_size,
+            num_observations=num_observations,
+            device=observations.device,
+        )
+        batch_indices = torch.arange(batch_size, device=observations.device)
+        target_frames = observations[batch_indices, sampled_indices.target]
+        reference_frames = observations[batch_indices, sampled_indices.reference]
+        conditioning_frames = observations[batch_indices, sampled_indices.condition]
 
         # Encode observations to latent codes (or assume observations already latents)
         if observations_are_latents:
@@ -83,39 +95,20 @@ class Model(nn.Module):
             with torch.no_grad():
                 self.ae.eval()
                 input_frames = torch.stack([target_frames, reference_frames, conditioning_frames], dim=1)
-                if self.config["autoencoder"]["type"] == "ours":
-                    latents = self.ae(input_frames).latents
-                else:
-                    flat_input_frames = rearrange(input_frames, "b n c h w -> (b n) c h w")
-                    flat_latents = self.ae.encode(flat_input_frames)
-                    latents = rearrange(flat_latents, "(b n) c h w -> b n c h w", n=3)
+                latents = self.autoencoder.encode(input_frames)
         target_latents = latents[:, 0]
         reference_latents = latents[:, 1]
         conditioning_latents = latents[:, 2]
 
-        # Sample input latents
-        noise = torch.randn_like(target_latents).to(target_latents.dtype).to(target_latents.device)
-        timestamps = torch.rand(batch_size, 1, 1, 1).to(target_latents.dtype).to(target_latents.device)
-        input_latents = (1 - (1 - self.sigma) * timestamps) * noise + timestamps * target_latents
-
-        # Calculate target vectors
-        target_vectors = (target_latents - (1 - self.sigma) * input_latents) / (1 - (1 - self.sigma) * timestamps)
-
-        # Create smoke mask: identify non-black regions in target frames
-        # Mask pixels where smoke is present (L2 norm > threshold in latent space)
-        smoke_threshold = self.config.get("smoke_threshold", 0.1)
-        smoke_mask = (target_latents.norm(dim=1, keepdim=True) > smoke_threshold).float()  # [b, 1, h, w]
-        
-        # Calculate time distances
-        index_distances = (reference_frames_indices - conditioning_frames_indices).to(input_latents.device)
+        flow_sample = self.flow_matching_objective.sample(target_latents)
 
         # Predict vectors
         reconstructed_vectors = self.vector_field_regressor(
-            input_latents=input_latents,
+            input_latents=flow_sample.input_latents,
             reference_latents=reference_latents,
             conditioning_latents=conditioning_latents,
-            index_distances=index_distances,
-            timestamps=timestamps.squeeze(3).squeeze(2).squeeze(1))
+            index_distances=sampled_indices.distance,
+            timestamps=flow_sample.timestamps.flatten())
 
         return DictWrapper(
             # Inputs
@@ -123,8 +116,8 @@ class Model(nn.Module):
 
             # Data for loss calculation
             reconstructed_vectors=reconstructed_vectors,
-            target_vectors=target_vectors,
-            smoke_mask=smoke_mask)
+            target_vectors=flow_sample.target_vectors,
+            smoke_mask=flow_sample.smoke_mask)
 
     @torch.no_grad()
     def generate_frames(
@@ -166,12 +159,7 @@ class Model(nn.Module):
         if treat_as_latents:
             latents = observations
         else:
-            if self.config["autoencoder"]["type"] == "ours":
-                latents = self.ae(observations).latents
-            else:
-                flat_input_frames = rearrange(observations, "b n c h w -> (b n) c h w")
-                flat_latents = self.ae.encode(flat_input_frames)
-                latents = rearrange(flat_latents, "(b n) c h w -> b n c h w", n=observations.size(1))
+            latents = self.autoencoder.encode(observations)
 
         b, n, c, h, w = latents.shape
         if n == 1:
@@ -220,11 +208,6 @@ class Model(nn.Module):
             latents = latents[:, 1:]
 
         # Decode to image space
-        latents = rearrange(latents, "b n c h w -> (b n) c h w")
-        if self.config["autoencoder"]["type"] == "ours":
-            reconstructed_observations = self.ae.backbone.decode_from_latents(latents)
-        else:
-            reconstructed_observations = self.ae.decode(latents)
-        reconstructed_observations = rearrange(reconstructed_observations, "(b n) c h w -> b n c h w", b=b)
+        reconstructed_observations = self.autoencoder.decode(latents)
 
         return reconstructed_observations
