@@ -1,7 +1,7 @@
 name: "smoke_dataset"
 
 data:
-  data_root: /home/aoubaidi/Documents/Modelisation-panaches-de-fum-es-industrielles-par-Flow-Matching/final_dataset
+  data_root: final_dataset
   input_size: 128
   crop_size: 128
   frames_per_sample: 10  # Réduit
@@ -18,7 +18,7 @@ model:
     out_norm: "ln"       # Layer normalization
   autoencoder:
     type: "ours"
-    ckpt_path: /home/aoubaidi/Documents/Modelisation-panaches-de-fum-es-industrielles-par-Flow-Matching/runs/vqvae_vqvae_masked_finetune/vqvae_epoch_25.ckpt
+    ckpt_path: runs/vqvae_vqvae_masked_finetune/vqvae_epoch_25.ckpt
     encoder:
       in_channels: 3
       out_channels: 256

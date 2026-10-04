@@ -3,7 +3,7 @@ import os
 import requests
 from concurrent.futures import ThreadPoolExecutor
 
-JSON_FILE = 'metadata_02242020.json'  # Path to your metadata file
+JSON_FILE = 'prepare_data/metadata_02242020.json'  # Path to your metadata file
 DOWNLOAD_DIR = 'smoke_videos'          # Folder where videos will be saved
 RESOLUTION = 180                       # Choose 180 or 320
 NUM_THREADS = 10                       # Number of simultaneous downloads
@@ -82,7 +82,7 @@ def main():
     print(f"Unique label_state_admin values: {sorted(all_labels_admin)}")
     
     # Filter for Strong Positive (label 23 - highest quality in this JSON)
-    print(f"\n🎯 Mode: Download STRONG POSITIVE videos (label {TARGET_LABELS})")
+    print(f"\n Mode: Download STRONG POSITIVE videos (label {TARGET_LABELS})")
     to_download = [
         item for item in data 
         if item.get('label_state') in TARGET_LABELS 
@@ -92,8 +92,8 @@ def main():
     print(f"Found {len(to_download)} Strong Positive videos to download.")
     
     if len(to_download) == 0:
-        print("\n⚠️  No videos found with the target labels!")
-        print("💡 Suggestion: Check if the labels exist in the values above.")
+        print("\n  No videos found with the target labels!")
+        print(" Suggestion: Check if the labels exist in the values above.")
         print("   Available labels:", sorted(all_labels_state | all_labels_admin))
         return
     

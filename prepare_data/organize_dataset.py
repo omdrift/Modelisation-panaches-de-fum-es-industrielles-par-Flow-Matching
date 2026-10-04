@@ -73,7 +73,7 @@ def organize_dataset(src_root, dst_root, train_ratio=0.8, val_ratio=0.1):
 
     print(f"Labels saved: train.txt ({len(train_labels)} lines), val.txt ({len(val_labels)} lines) and test.txt ({len(test_labels)} lines)")
 
-SOURCE_DIR = "smoke_frames/"
+SOURCE_DIR = "frames/"
 DEST_DIR = "final_dataset/"
 
 organize_dataset(SOURCE_DIR, DEST_DIR)

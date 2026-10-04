@@ -1,9 +1,13 @@
 import os
 import cv2
 import numpy as np
-from pymatting import estimate_alpha_cf
 from glob import glob
 from tqdm import tqdm
+
+try:
+    from pymatting import estimate_alpha_cf
+except ImportError:
+    estimate_alpha_cf = None
 
 def generate_optimized_smoke_dataset(input_dir, output_dir, intensity_gain=1.2, show_monitor=True):
     if not os.path.exists(output_dir):
@@ -11,6 +15,9 @@ def generate_optimized_smoke_dataset(input_dir, output_dir, intensity_gain=1.2, 
 
     video_paths = sorted(glob(os.path.join(input_dir, "*.mp4")))
     print(f"Extraction : {len(video_paths)} vidéos trouvées.")
+
+    if estimate_alpha_cf is None:
+        print("Warning: 'pymatting' is not installed. Falling back to trimap-only alpha extraction.")
 
     for v_path in tqdm(video_paths):
         video_name = os.path.basename(v_path).split('.')[0]
@@ -56,13 +63,18 @@ def generate_optimized_smoke_dataset(input_dir, output_dir, intensity_gain=1.2, 
                 continue
 
             try:
-                small_frame = cv2.resize(frame, (w//2, h//2), interpolation=cv2.INTER_AREA)
-                small_trimap = cv2.resize(trimap, (w//2, h//2), interpolation=cv2.INTER_NEAREST)
-                
-                alpha_small = estimate_alpha_cf(small_frame.astype(np.float64), 
-                                                small_trimap.astype(np.float64))
-                
-                alpha = cv2.resize(alpha_small, (w, h), interpolation=cv2.INTER_LINEAR)
+                if estimate_alpha_cf is not None:
+                    small_frame = cv2.resize(frame, (w//2, h//2), interpolation=cv2.INTER_AREA)
+                    small_trimap = cv2.resize(trimap, (w//2, h//2), interpolation=cv2.INTER_NEAREST)
+                    alpha_small = estimate_alpha_cf(
+                        small_frame.astype(np.float64),
+                        small_trimap.astype(np.float64),
+                    )
+                    alpha = cv2.resize(alpha_small, (w, h), interpolation=cv2.INTER_LINEAR)
+                else:
+                    alpha = trimap.copy()
+                    alpha[alpha == 0.5] = np.clip(smoke_score[alpha == 0.5] / (max_s + 1e-8), 0.0, 1.0)
+
                 alpha = np.where(alpha < 0.1, 0, alpha)
 
                 alpha_3d = np.repeat(alpha[:, :, np.newaxis], 3, axis=2)
@@ -86,7 +98,7 @@ def generate_optimized_smoke_dataset(input_dir, output_dir, intensity_gain=1.2, 
     cv2.destroyAllWindows()
 
 # Paramètres de lancement
-INPUT_DIR = "videos"
+INPUT_DIR = "smoke_videos/"
 OUTPUT_DIR = "frames/"
 
 generate_optimized_smoke_dataset(INPUT_DIR, OUTPUT_DIR, intensity_gain=1.3)

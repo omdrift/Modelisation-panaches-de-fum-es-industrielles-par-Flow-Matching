@@ -1,7 +1,7 @@
 name: "smoke_dataset_vqgan"
 
 data:
-  data_root: /home/aoubaidi/Documents/Modelisation-panaches-de-fum-es-industrielles-par-Flow-Matching/final_dataset
+  data_root: final_dataset
   input_size: 64
   crop_size: 64
   frames_per_sample: 16  # Predict 16 frames for better smoke dynamics
@@ -19,7 +19,7 @@ model:
   autoencoder:
     type: "ours"
     # VQGAN checkpoint trained with adversarial loss
-    ckpt_path: /home/aoubaidi/Documents/Modelisation-panaches-de-fum-es-industrielles-par-Flow-Matching/runs_vqgan/vqgan_smoke_vqgan_v2/vqgan_epoch_45.ckpt
+    ckpt_path: runs_vqgan/vqgan_smoke_vqgan_v2/vqgan_epoch_45.ckpt
     encoder:
       in_channels: 3
       out_channels: 256
