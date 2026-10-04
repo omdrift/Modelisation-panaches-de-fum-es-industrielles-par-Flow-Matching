@@ -27,7 +27,7 @@ data:
 
 # Hyperparamètres d'entraînement optimisés
 training:
-  batch_size: 32        # Reduced for 128x128 resolution (uses more memory)
+  batch_size: 32        # Reduced for 64x64 resolution (uses more memory)
   learning_rate: 2e-4   # Ajusté pour la nouvelle capacité
   weight_decay: 1e-6    #
   epochs: 100
@@ -42,6 +42,6 @@ evaluation:
 
 notes:
   - "This config is aligned with train_vqvae.py and smoke_dataset_optimized.yaml"
-  - "Input/output: 128x128 images -> 16x16 latent space (state_res in smoke_dataset_optimized.yaml)"
+  - "Input/output: 64x64 images -> 8x8 latent space (state_res in smoke_dataset_vqgan.yaml)"
   - "Latent channels: 256 (state_size in smoke_dataset_optimized.yaml)"
-  - "Downsampling factor: 8x (128/16 = 8)"
+  - "Downsampling factor: 8x (64/8 = 8)"

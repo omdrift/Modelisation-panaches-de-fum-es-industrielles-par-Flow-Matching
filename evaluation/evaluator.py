@@ -86,7 +86,7 @@ class Evaluator:
                 break
 
             # Fetch data
-            observations = batch.cuda()
+            observations = batch.to(self.device, non_blocking=True)
             num_observations = self.config["num_observations"]
             observations = observations[:, :num_observations]
 

@@ -31,6 +31,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", required=True, type=Path)
     parser.add_argument("--split", choices=("train", "val", "test"), default="test")
     parser.add_argument("--num-samples", type=int, default=32)
+    parser.add_argument(
+        "--num-test-videos",
+        type=int,
+        default=None,
+        help="Optional upper bound on the number of videos evaluated",
+    )
     parser.add_argument("--steps", type=int, default=None, help="Override ODE integration steps")
     parser.add_argument("--output-dir", type=Path, default=Path("evaluation_outputs/flow_matching"))
     parser.add_argument("--device", choices=("cpu", "cuda"), default=None)
@@ -114,6 +120,8 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     output_dir = resolve_path(args.output_dir)
     if args.num_samples <= 0:
         raise ValueError("--num-samples must be positive")
+    if args.num_test_videos is not None and args.num_test_videos <= 0:
+        raise ValueError("--num-test-videos must be positive")
     if not config_path.is_file():
         raise FileNotFoundError(f"Config not found: {config_path}")
     if not checkpoint_path.is_file():
@@ -146,6 +154,8 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         skip_short_videos=True,
     )
     sample_count = min(args.num_samples, len(dataset))
+    if args.num_test_videos is not None:
+        sample_count = min(sample_count, args.num_test_videos)
     if sample_count == 0:
         raise ValueError(f"No usable videos in split '{args.split}'")
     loader = DataLoader(
