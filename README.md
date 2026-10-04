@@ -2,65 +2,34 @@
 
 Ce dépôt contient le code et les ressources pour la modélisation des panaches de fumées industrielles, basé sur des approches VQGAN et Flow Matching pour la génération vidéo.
 
-## Quelques exemples de travaux
+## Résultats visuels
 
 ### Reconstruction VQGAN
-Comparaison entre les images originales et leurs reconstructions par le VQGAN :
 
-<p align="center">
-  <img src="media/vqgan_reconstruction_comparison.png" width="800" alt="Comparaison reconstruction VQGAN">
-</p>
+![Comparaison reconstruction VQGAN](media/vqgan_reconstruction_comparison.png)
 
-### Génération de séquences vidéo
-Résultats de génération de séquences de fumée avec le modèle Flow Matching :
+*Comparaison originale vs reconstruction VQGAN : haute fidélité de reproduction des panaches de fumée*
 
-<p align="center">
-  <img src="media/figure5_generation.png" width="800" alt="Génération de séquences">
-</p>
+### Génération Flow Matching
+
+![Génération Flow Matching](media/figure5_generation.png)
+
+*Génération de séquences vidéo avec Flow Matching : exemple de conditionnement court → 9 frames générées*
 
 ### Comparaison vidéos réelles vs générées
 
-<table align="center">
-  <tr>
-    <td align="center">
-      <b>Vidéos Réelles</b><br>
-      <img src="media/real_videos_109999_c99bc7aa458f1f121210.gif" width="300" alt="Vidéos réelles">
-    </td>
-    <td align="center">
-      <b>Vidéos Générées</b><br>
-      <img src="media/generated_videos_109999_f96b7834ed7ac1939875.gif" width="300" alt="Vidéos générées">
-    </td>
-  </tr>
-</table>
+| Vidéos réelles | Vidéos générées |
+|----------------|-----------------|
+| ![Real](media/real_videos_109999_c99bc7aa458f1f121210.gif) | ![Generated](media/generated_videos_109999_f96b7834ed7ac1939875.gif) |
 
-*Ces GIFs sont automatiquement générés par WandB pendant l'entraînement Flow Matching (step 109999 = checkpoint final). Le modèle génère 9 frames à partir d'1 frame de contexte.*
+*Gauche : séquences réelles / Droite : séquences générées par le modèle*
 
----
-
-## Table des matières
-
-1. [Prérequis](#prérequis)
-2. [Installation](#installation-de-lenvironnement)
-3. [Dataset : Préparation](#dataset--préparation-complète)
-4. [Architecture](#architecture-et-structure-du-projet)
-5. [Entraînement VQGAN](#étape-1--entraînement-vqgan)
-6. [Entraînement Flow Matching](#étape-2--entraînement-flow-matching)
-7. [Scripts utiles](#scripts-utiles)
-8. [Dépannage](#dépannage)
-9. [Crédits](#crédits-et-citations)
+> Note méthodologique : l’illustration montre un cas de génération 1 → 9, mais l’entraînement n’utilise pas ce schéma simplifié. Le modèle reçoit une séquence de `num_observations` frames, échantillonne une frame cible, sa frame de référence immédiate et une frame de conditionnement antérieure à la cible. En inférence, on fournit `condition_frames` frames initiales puis on génère `frames_to_generate` frames futures.
 
 ---
 
 ## Prérequis
-
-### Matériel
-- **GPU NVIDIA** avec au moins 8 GB de VRAM (recommandé : 16 GB+)
-- **RAM** : 32 GB recommandés
-- **Espace disque** : ~50 GB pour le dataset + ~20 GB pour les checkpoints
-
-### Logiciels
-- Conda ou Mamba
-- Pilotes NVIDIA (vérifier avec `nvidia-smi`)
+- Conda (ou mamba) et pilotes NVIDIA installés (vérifier avec `nvidia-smi`).
 - Python 3.9+
 - CUDA 11.8+ (compatible avec PyTorch 2.0+)
 
@@ -179,52 +148,61 @@ Nous priorisons les annotations indiquant des émissions de fumée confirmées :
 Télécharge les vidéos depuis les URLs du fichier `metadata_02242020.json`.
 
 ```bash
-python dataset_init.py
+python prepare_data/dataset_init.py
 ```
 
-**Options** (modifiables dans le script) :
-- `RESOLUTION` : `"180"` ou `"320"`
-- `OUTPUT_DIR` : dossier de destination (défaut : `smoke_videos/`)
-- `MAX_WORKERS` : threads pour téléchargement parallèle (défaut : 10)
-- `LABELS` : labels à télécharger (défaut : `[23, 47]`)
+**Options** (modifiables dans le script, lignes 6-11) :
+- `JSON_FILE` : `'metadata_02242020.json'`
+- `DOWNLOAD_DIR` : `'smoke_videos'` (dossier de destination)
+- `RESOLUTION` : `180` ou `320` (résolution des vidéos)
+- `NUM_THREADS` : `10` (threads pour téléchargement parallèle)
+- `TARGET_LABELS` : `[23]` (labels à télécharger, 23 = Strong Positive)
+- `EXCLUDE_LABELS` : `[-2]` (labels à exclure, -2 = Bad data)
 
-**Sortie** : `smoke_videos/` avec structure par vue (`view_0-10/`, `view_1-4/`, etc.)
+**Sortie** : `smoke_videos/` avec vidéos nommées par ID
 
 #### **Étape 2 : Extraction et matting** (`prepare_dataset.py`)
 
-Extrait les frames et applique un algorithme de matting pour isoler la fumée.
+Extrait les frames et applique un algorithme de matting optimisé pour isoler la fumée.
 
 ```bash
-python prepare_dataset.py
+python prepare_data/prepare_dataset.py
 ```
 
 **Processus** :
 1. Charge chaque vidéo MP4
-2. Extrait les frames individuelles
-3. Applique RVM (Robust Video Matting) pour isoler la fumée
-4. Sauvegarde en PNG
+2. Calcule le background médian pour détecter les zones dynamiques
+3. Applique un algorithme de matting (closed-form) pour isoler la fumée
+4. Génère un alpha matte pour extraire uniquement les panaches
+5. Sauvegarde les frames extraites en PNG
 
-**Paramètres** (dans le script) :
-- `INPUT_DIR` : `smoke_videos/`
-- `OUTPUT_DIR` : `isolated_smoke_frames/`
-- `BACKGROUND_MODEL` : `rvm_resnet50.pth`
+**Paramètres** (dans le script, lignes 86-88) :
+- `INPUT_DIR` : `"videos"` (dossier contenant les vidéos)
+- `OUTPUT_DIR` : `"frames/"` (dossier de sortie)
+- `intensity_gain` : `1.3` (amplification de l'intensité de la fumée)
 
-**Sortie** : `isolated_smoke_frames/` (structure miroir de `smoke_videos/`)
+**Sortie** : `frames/` avec structure par vidéo (`video_name/frame_0000.png`, etc.)
 
 #### **Étape 3 : Organisation et splits** (`organize_dataset.py`)
 
 Organise les frames en séquences et crée les splits train/val/test.
 
 ```bash
-python organize_dataset.py
+python prepare_data/organize_dataset.py
 ```
 
 **Fonctionnalités** :
-- Regroupe frames par séquence vidéo
-- Renommage standardisé : `video_XXXX_frame_YYYY.png`
-- Création automatique des splits : **80% train / 10% val / 10% test**
-- Génère les listes : `train_files.txt`, `val_files.txt`, `test_files.txt`
-- Calcule les statistiques : `dataset_stats.json`
+- Regroupe frames par dossier vidéo source
+- Création automatique des splits : **80% train / 10% val / 10% test** (par défaut)
+- Copie les frames dans les dossiers appropriés
+- Génère les listes de labels pour chaque split
+- Calcule les statistiques : nombre de frames et vidéos par split
+
+**Paramètres** (modifiables dans le script via fonction `organize_dataset()`) :
+- `src_root` : dossier source contenant les frames extraites
+- `dst_root` : dossier de destination (structure finale)
+- `train_ratio` : 0.8 (80% pour train)
+- `val_ratio` : 0.1 (10% pour validation)
 
 **Sortie** :
 ```
@@ -238,32 +216,19 @@ final_dataset/
 └── dataset_stats.json    # Statistiques complètes
 ```
 
-#### **Étape 4 : Vérification d'intégrité** (`split_labels.py`)
-
-Vérifie que toutes les séquences sont complètes (pas de frames manquantes).
-
-```bash
-python split_labels.py
-```
-
-**Sortie** : `missing_frames_report.json` (si frames manquantes détectées)
-
 ### Workflow complet recommandé
 
 ```bash
 # 1. Télécharger les vidéos (peut prendre plusieurs heures)
-python dataset_init.py
+python prepare_data/dataset_init.py
 
 # 2. Extraire et isoler les frames (traitement intensif)
-python prepare_dataset.py
+python prepare_data/prepare_dataset.py
 
 # 3. Organiser le dataset et créer les splits
-python organize_dataset.py
+python prepare_data/organize_dataset.py
 
-# 4. Vérifier l'intégrité
-python split_labels.py
-
-# 5. Vérifier la structure finale
+# 4. Vérifier la structure finale
 ls -lh final_dataset/
 cat final_dataset/dataset_stats.json
 ```
@@ -360,28 +325,33 @@ Article méthodologique : https://arxiv.org/abs/2211.14575
 ├── runs_vqgan/                   # Checkpoints VQGAN
 ├── runs_vqvae/                   # Checkpoints VQ-VAE
 │
+├── test/                         # Scripts de tests et validation
+│   ├── test_vqgan.py            # Test VQGAN reconstruction
+│   ├── test_vqgan_simple.py     # Test VQGAN simplifié
+│   ├── test_vqvae.py            # Test VQ-VAE
+│   ├── test_video_generation.py # Test génération vidéo Flow Matching
+│   └── test_wandb_exact.py      # Reproduction exacte logs WandB
+│
 ├── train.py                      # Script principal Flow Matching
 ├── train_vqvae.py               # Script VQ-VAE
 ├── train_vqgan.py               # Script VQGAN
-├── test_model.py                # Tests
-├── test_video_generation.py     # Génération vidéos test
-└── requirements.txt
+├── quick_eval_test.py           # Évaluation rapide modèle
+├── visualize_vqgan_reconstruction.py  # Visualisation VQGAN
+├── visualize_vqvae_reconstruction.py  # Visualisation VQ-VAE
+├── visualize_smoke_threshold.py # Analyse seuil de fumée
+└── environment.yml              # Environnement Conda
 ```
 
 ### Fichiers de configuration clés
 
-#### `configs/config_vqgan.yaml`
-Configuration VQGAN (auto-encodeur + discriminateur) :
-- Architecture encoder/decoder
-- Paramètres quantificateur vectoriel
-- Poids des pertes (reconstruction, perceptual, adversarial)
+| Fichier | Résolution / latents | Rôle |
+|---|---|---|
+| `configs/config_vqgan.yaml` | 64×64 → 8×8 | Entraînement VQGAN / VQVAE actuel pour les reconstructions |
+| `configs/smoke_dataset_vqgan.yaml` | 64×64 → 8×8 | Flow Matching principal sur les checkpoints VQGAN actuels |
+| `configs/smoke_dataset.yaml` | 128×128 → 16×16 | Variante haute résolution historique, à utiliser avec le checkpoint correspondant |
+| `configs/smoke_dataset_optimized.yaml` | 64×64 → 8×8 | Variante temporelle plus longue avec conditionnement renforcé |
 
-#### `configs/smoke_dataset_vqgan.yaml`
-Configuration Flow Matching :
-- Chemin dataset (`data.data_root`)
-- Chemin checkpoint VQGAN pré-entraîné (`model.autoencoder.ckpt_path`)
-- Architecture régresseur champ vectoriel
-- Hyperparamètres Flow Matching
+Les chemins de checkpoints et de datasets ont été rendus relatifs dans les fichiers de configuration. Ajustez-les seulement si vous placez les artefacts en dehors de la structure du dépôt.
 
 ---
 
@@ -389,7 +359,7 @@ Configuration Flow Matching :
 
 ### Vue d'ensemble
 
-1. **VQGAN** : Compression 128×128×3 → 16×16×256 avec reconstruction haute fidélité
+1. **VQGAN** : Compression 64×64×3 → 8×8×256 avec reconstruction haute fidélité
 2. **Flow Matching** : Dynamique temporelle dans l'espace latent (1 frame → 9 frames)
 
 ---
@@ -429,11 +399,13 @@ python train_vqgan.py \
 
 Points essentiels à configurer :
 
+La version documentée ici est celle utilisée dans le dépôt actuel: 64×64 d'entrée et un espace latent 8×8. Si vous voulez refaire la variante 128×128/16×16, utilisez `configs/smoke_dataset.yaml` avec un checkpoint compatible.
+
 ```yaml
 data:
-  data_root: /absolute/path/to/final_dataset  # ⚠️ Chemin absolu
-  input_size: 128
-  crop_size: 128
+  data_root: final_dataset
+  input_size: 64
+  crop_size: 64
   frames_per_sample: 1  # VQGAN traite frame par frame
 
 model:
@@ -554,6 +526,15 @@ python visualize_vqgan_reconstruction.py \
     --output vqgan_comparison.png
 ```
 
+**Alternative avec le script de test** :
+```bash
+# Test direct sur une vidéo
+python test/test_vqgan.py
+
+# Ou test simplifié
+python test/test_vqgan_simple.py
+```
+
 ### Critères de qualité
 
 Un VQGAN bien entraîné doit avoir :
@@ -590,16 +571,18 @@ python train.py \
     --wandb
 ```
 
+Le point d’entrée `train.py` exécute directement un entraînement mono-GPU quand `--num-gpus 1` est passé, puis passe à `torch.multiprocessing.spawn` au-delà. C'est utile pour valider indépendamment un seul GPU avant d'étendre à un lancement distribué.
+
 ### Configuration YAML (`smoke_dataset_vqgan.yaml`)
 
 Points **critiques** à configurer :
 
 ```yaml
 data:
-  data_root: /absolute/path/to/final_dataset  # ⚠️ Chemin absolu
-  input_size: 128
-  crop_size: 128
-  frames_per_sample: 10  # 1 contexte + 9 à générer
+  data_root: final_dataset
+  input_size: 64
+  crop_size: 64
+  frames_per_sample: 16  # 10 observations + 6 futures
   random_horizontal_flip: True
 
 model:
@@ -607,7 +590,7 @@ model:
   
   vector_field_regressor:
     state_size: 256      # ⚠️ DOIT = VQGAN embedding_dimension
-    state_res: [16, 16]  # ⚠️ DOIT = résolution latente VQGAN (128/8 = 16)
+    state_res: [8, 8]  # ⚠️ DOIT = résolution latente VQGAN (64/8 = 8)
     inner_dim: 512       # Dimension interne transformer
     depth: 6             # Profondeur temporelle (6-12)
     mid_depth: 2
@@ -615,8 +598,8 @@ model:
   
   autoencoder:
     type: "ours"
-    # ⚠️ CHEMIN ABSOLU VERS CHECKPOINT VQGAN PRÉ-ENTRAÎNÉ
-    ckpt_path: /absolute/path/to/runs_vqgan/smoke_vqgan_v1/checkpoints/vqgan_epoch_50.ckpt
+    # ⚠️ Chemin relatif vers le checkpoint VQGAN pré-entraîné
+    ckpt_path: runs_vqgan/vqgan_smoke_vqgan_v2/checkpoints/vqgan_epoch_45.ckpt
     
     # ⚠️ Copier exactement la config du VQGAN ci-dessus
     encoder:
@@ -645,7 +628,7 @@ training:
   
   num_observations: 10
   condition_frames: 1
-  frames_to_generate: 9
+  frames_to_generate: 6
   
   loss_weights:
     flow_matching_loss: 1.0
@@ -826,7 +809,7 @@ runs/smoke_dataset_vqgan_run-flow_smoke_v1/
 #### Sur une vidéo existante
 
 ```bash
-python test_video_generation.py \
+python test/test_video_generation.py \
     --checkpoint runs/smoke_dataset_vqgan_run-flow_smoke_v1/checkpoints/step_120000.pth \
     --config configs/smoke_dataset_vqgan.yaml \
     --video smoke_videos/view_0-10/3053_0-10-2018-06-11-2583-1111-3086-1614-180-180-5522-1528722380-1528722555.mp4 \
@@ -834,31 +817,84 @@ python test_video_generation.py \
     --num-frames 9
 ```
 
-#### Sur une frame de conditionnement
+#### Reproduction exacte logs WandB
+
+Pour reproduire exactement les visualisations WandB :
 
 ```bash
-python test_model.py \
+python test/test_wandb_exact.py \
     --checkpoint runs/smoke_dataset_vqgan_run-flow_smoke_v1/checkpoints/step_120000.pth \
     --config configs/smoke_dataset_vqgan.yaml \
-    --condition-frame final_dataset/test/video_0042_frame_0001.png \
-    --output-dir predictions/
+    --video smoke_videos/view_0-10/3053_0-10-2018-06-11-2583-1111-3086-1614-180-180-5522-1528722380-1528722555.mp4 \
+    --output-dir test_wandb_output/
 ```
 
 ---
 
-## Scripts utiles
+## Scripts de test et validation
 
-### Génération de figures pour présentation
+### Test VQGAN (reconstruction)
+
+Teste la qualité de reconstruction du VQGAN sur une vidéo :
 
 ```bash
-python generate_presentation_figures.py \
+python test/test_vqgan.py
+```
+
+**Configuration** (modifier dans le script) :
+- `checkpoint_path` : chemin vers le checkpoint VQGAN
+- `video_path` : vidéo à tester
+- Génère des comparaisons originale vs reconstruction
+
+### Test VQGAN simplifié
+
+Version allégée pour test rapide :
+
+```bash
+python test/test_vqgan_simple.py
+```
+
+### Test VQ-VAE
+
+Teste le VQ-VAE (sans discriminateur) :
+
+```bash
+python test/test_vqvae.py
+```
+
+### Test génération vidéo Flow Matching
+
+Génère des vidéos avec le modèle Flow Matching :
+
+```bash
+python test/test_video_generation.py \
     --checkpoint runs/smoke_dataset_vqgan_run-flow_smoke_v1/checkpoints/step_120000.pth \
     --config configs/smoke_dataset_vqgan.yaml \
     --video smoke_videos/view_0-10/3053_0-10-2018-06-11-2583-1111-3086-1614-180-180-5522-1528722380-1528722555.mp4 \
-    --output-dir presentation_figures/
+    --output test_generation.mp4 \
+    --num-frames 9
 ```
 
-Génère des grilles comparatives et des figures pour publication.
+### Reproduction exacte WandB
+
+Reproduit exactement ce que WandB log pendant l'entraînement (pour debugging) :
+
+```bash
+python test/test_wandb_exact.py \
+    --checkpoint runs/smoke_dataset_vqgan_run-flow_smoke_v1/checkpoints/step_120000.pth \
+    --config configs/smoke_dataset_vqgan.yaml \
+    --video smoke_videos/view_0-10/3053_0-10-2018-06-11-2583-1111-3086-1614-180-180-5522-1528722380-1528722555.mp4 \
+    --output-dir test_wandb_output/
+```
+
+**Génère** :
+- GIFs comparatifs (réel vs généré)
+- Grilles PNG style WandB
+- Exactement comme dans le dashboard WandB
+
+---
+
+## Scripts utiles
 
 ### Test rapide d'évaluation
 
@@ -874,7 +910,7 @@ Teste rapidement le modèle sur quelques exemples.
 
 ```bash
 # Ne garder que les frames avec au moins 5% de fumée
-python filter_small_smoke.py \
+python prepare_data/filter_small_smoke.py \
     --input final_dataset/train/ \
     --output final_dataset_filtered/train/ \
     --min-smoke-ratio 0.05

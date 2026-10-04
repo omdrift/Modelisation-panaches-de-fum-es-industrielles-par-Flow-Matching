@@ -20,7 +20,7 @@ rad.json
 *.flf
 #Test results file
 TestResults.
-
+frames/
 .venv
 smoke_frames_2
 data/
@@ -43,6 +43,6 @@ presentation_*
 
 runs_vqgan
 runs_vqvae
-presentation_figures1
+
 presentation_figures
 smoke_frames 
