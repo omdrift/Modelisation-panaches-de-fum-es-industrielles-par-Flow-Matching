@@ -1,0 +1,43 @@
+experiment:
+  name: vqgan_64
+  version: "1.0"
+  status: primary
+
+name: "vqgan_64"
+
+encoder:
+  in_channels: 3
+  out_channels: 256
+  mid_channels: 128
+
+decoder:
+  in_channels: 256
+  out_channels: 3
+  mid_channels: 128
+
+vector_quantizer:
+  embedding_dimension: 256
+  num_embeddings: 1024
+  commitment_cost: 0.1
+
+data:
+  data_root: final_dataset
+  input_size: 64
+  crop_size: 64
+  random_horizontal_flip: true
+
+model:
+  latent_downsampling: 8
+  latent_resolution: [8, 8]
+
+training:
+  batch_size: 16
+  num_workers: 4
+  learning_rate: 0.0002
+  epochs: 50
+  save_every: 5
+
+evaluation:
+  batch_size: 16
+  num_workers: 4
+  steps: 100

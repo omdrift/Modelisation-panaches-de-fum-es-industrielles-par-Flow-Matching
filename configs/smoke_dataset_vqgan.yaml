@@ -62,5 +62,5 @@ evaluation:
     observation_stacking: 1
   num_observations: 10
   condition_frames: 1
-  frames_to_generate: 9
+  frames_to_generate: 6
   steps: 500  # More steps for better generation quality with VQGAN

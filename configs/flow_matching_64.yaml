@@ -1,0 +1,68 @@
+experiment:
+  name: flow_matching_64
+  version: "1.0"
+  status: primary
+
+name: "flow_matching_64"
+
+data:
+  data_root: final_dataset
+  input_size: 64
+  crop_size: 64
+  frames_per_sample: 16
+  random_horizontal_flip: true
+
+model:
+  sigma: 0.001
+  vector_field_regressor:
+    state_size: 256
+    state_res: [8, 8]
+    inner_dim: 512
+    depth: 6
+    mid_depth: 2
+    out_norm: "ln"
+  autoencoder:
+    type: "ours"
+    ckpt_path: runs_vqgan/vqgan_64_baseline/checkpoints/vqgan_epoch_50.ckpt
+    encoder:
+      in_channels: 3
+      out_channels: 256
+      mid_channels: 128
+    decoder:
+      in_channels: 256
+      out_channels: 3
+      mid_channels: 128
+    vector_quantizer:
+      embedding_dimension: 256
+      num_embeddings: 1024
+      commitment_cost: 0.1
+
+training:
+  batching:
+    batch_size: 24
+    num_workers: 2
+  optimizer:
+    learning_rate: 0.0001
+    weight_decay: 0.000005
+    num_warmup_steps: 1000
+    num_training_steps: 100000
+  num_observations: 10
+  condition_frames: 1
+  frames_to_generate: 6
+  loss_weights:
+    flow_matching_loss: 1.0
+  smoke_weight: 5.0
+  background_weight: 1.0
+  smoke_threshold: 0.1
+
+evaluation:
+  batching:
+    batch_size: 1
+    num_workers: 2
+    observations_count: 10
+    skip_frames: 0
+    observation_stacking: 1
+  num_observations: 10
+  condition_frames: 1
+  frames_to_generate: 6
+  steps: 50

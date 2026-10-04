@@ -3,7 +3,9 @@ VQGAN Training Script
 Trains a Vector-Quantized GAN with adversarial and perceptual losses.
 """
 import argparse
+import json
 import os
+import shutil
 from pathlib import Path
 
 import torch
@@ -31,14 +33,14 @@ def parse_args():
     parser.add_argument("--run-name", type=str, required=True, help="Name of the run")
     parser.add_argument("--output-dir", type=str, default=None, help="Optional output directory")
     parser.add_argument("--test-image", type=str, help="Path to a specific image to test every epoch")
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--lr-disc", type=float, default=1e-4, help="Discriminator learning rate")
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--num-workers", type=int, default=None)
+    parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--lr-disc", type=float, default=None, help="Discriminator learning rate")
     parser.add_argument("--wandb", action="store_true")
-    parser.add_argument("--save-every", type=int, default=5, help="Save checkpoint every N epochs")
-    parser.add_argument("--eval-every", type=int, default=1, help="Evaluate every N epochs")
+    parser.add_argument("--save-every", type=int, default=None, help="Save checkpoint every N epochs")
+    parser.add_argument("--eval-every", type=int, default=None, help="Evaluate every N epochs")
     
     # Loss weights
     parser.add_argument("--perceptual-weight", type=float, default=1.0, help="Weight for perceptual loss")
@@ -58,13 +60,25 @@ def train_vqgan():
     
     # --- Setup ---
     config = Configuration(args.config)
+    training_config = config.get("training", {})
+    args.batch_size = args.batch_size or int(training_config.get("batch_size", 8))
+    args.num_workers = args.num_workers if args.num_workers is not None else int(training_config.get("num_workers", 4))
+    args.epochs = args.epochs or int(training_config.get("epochs", 50))
+    args.lr = args.lr or float(training_config.get("learning_rate", 1e-4))
+    args.lr_disc = args.lr_disc or float(training_config.get("learning_rate_disc", args.lr))
+    args.save_every = args.save_every or int(training_config.get("save_every", 5))
+    args.eval_every = args.eval_every or int(training_config.get("eval_every", 1))
+
     if args.output_dir:
         output_dir = Path(args.output_dir)
     else:
         output_dir = Path("runs_vqgan") / f"vqgan_{args.run_name}"
     recons_dir = output_dir / "reconstructions"
+    checkpoints_dir = output_dir / "checkpoints"
     output_dir.mkdir(parents=True, exist_ok=True)
     recons_dir.mkdir(parents=True, exist_ok=True)
+    checkpoints_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(args.config, output_dir / "config.yaml")
     
     if args.wandb:
         wandb.init(project="smoke-vqgan", name=args.run_name, config=vars(args))
@@ -503,7 +517,7 @@ def train_vqgan():
                 "optimizer_g": optimizer_g.state_dict(),
                 "optimizer_d": optimizer_d.state_dict(),
             }
-            torch.save(checkpoint, output_dir / f"vqgan_epoch_{epoch+1}.ckpt")
+            torch.save(checkpoint, checkpoints_dir / f"vqgan_epoch_{epoch+1}.ckpt")
             print(f"  Checkpoint saved: vqgan_epoch_{epoch+1}.ckpt")
     
     # --- Final Plots ---
@@ -570,10 +584,26 @@ def train_vqgan():
         "vqvae": vqvae.state_dict(),
         "discriminator": discriminator.state_dict(),
     }
-    torch.save(final_checkpoint, output_dir / "vqgan_final.ckpt")
+    torch.save(final_checkpoint, checkpoints_dir / "vqgan_final.ckpt")
     
     # Also save generator only for easy loading
-    torch.save({"model": vqvae.state_dict()}, output_dir / "vqgan_generator_final.ckpt")
+    torch.save({"model": vqvae.state_dict()}, checkpoints_dir / "vqgan_generator_final.ckpt")
+
+    with (output_dir / "metrics.json").open("w", encoding="utf-8") as metrics_file:
+        json.dump({"epochs": args.epochs, "global_step": global_step, **history}, metrics_file, indent=2)
+        metrics_file.write("\n")
+
+    (output_dir / "README.md").write_text(
+        "# VQGAN run\n\n"
+        f"- Run: `{args.run_name}`\n"
+        f"- Config snapshot: `config.yaml`\n"
+        f"- Epochs: {args.epochs}\n"
+        f"- Global step: {global_step}\n"
+        "- Checkpoints: `checkpoints/`\n"
+        "- Reconstructions: `reconstructions/`\n"
+        "- Metrics history: `metrics.json`\n",
+        encoding="utf-8",
+    )
     
     print(f"\n{'='*60}")
     print(f"Training completed! Results saved to: {output_dir}")
