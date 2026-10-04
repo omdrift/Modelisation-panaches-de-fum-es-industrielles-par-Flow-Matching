@@ -24,13 +24,17 @@ def main():
 
     # Count gpus
     if args.num_gpus is None:
-        args.num_gpus = torch.cuda.device_count()
+        args.num_gpus = max(1, torch.cuda.device_count())
 
     # Launch processes.
     print('Launching processes...')
-    torch.multiprocessing.set_start_method('spawn')
+    try:
+        torch.multiprocessing.set_start_method('spawn')
+    except RuntimeError:
+        # Method can already be set when running from interactive environments.
+        pass
     with tempfile.TemporaryDirectory() as temp_dir:
-        if args.num_gpus == 1:
+        if args.num_gpus <= 1:
             train(rank=0, args=args, temp_dir=temp_dir)
         else:
             torch.multiprocessing.spawn(fn=train, args=(args, temp_dir), nprocs=args.num_gpus)

@@ -14,7 +14,7 @@ Ce dépôt contient le code et les ressources pour la modélisation des panaches
 
 ![Génération Flow Matching](media/figure5_generation.png)
 
-*Génération de séquences vidéo avec Flow Matching : 1 frame de contexte → 9 frames générées*
+*Génération de séquences vidéo avec Flow Matching : exemple de conditionnement court → 9 frames générées*
 
 ### Comparaison vidéos réelles vs générées
 
@@ -23,6 +23,8 @@ Ce dépôt contient le code et les ressources pour la modélisation des panaches
 | ![Real](media/real_videos_109999_c99bc7aa458f1f121210.gif) | ![Generated](media/generated_videos_109999_f96b7834ed7ac1939875.gif) |
 
 *Gauche : séquences réelles / Droite : séquences générées par le modèle*
+
+> Note méthodologique : l’illustration montre un cas de génération 1 → 9, mais l’entraînement n’utilise pas ce schéma simplifié. Le modèle reçoit une séquence de `num_observations` frames, échantillonne une frame cible, sa frame de référence immédiate et une frame de conditionnement antérieure à la cible. En inférence, on fournit `condition_frames` frames initiales puis on génère `frames_to_generate` frames futures.
 
 ---
 
@@ -342,18 +344,14 @@ Article méthodologique : https://arxiv.org/abs/2211.14575
 
 ### Fichiers de configuration clés
 
-#### `configs/config_vqgan.yaml`
-Configuration VQGAN (auto-encodeur + discriminateur) :
-- Architecture encoder/decoder
-- Paramètres quantificateur vectoriel
-- Poids des pertes (reconstruction, perceptual, adversarial)
+| Fichier | Résolution / latents | Rôle |
+|---|---|---|
+| `configs/config_vqgan.yaml` | 64×64 → 8×8 | Entraînement VQGAN / VQVAE actuel pour les reconstructions |
+| `configs/smoke_dataset_vqgan.yaml` | 64×64 → 8×8 | Flow Matching principal sur les checkpoints VQGAN actuels |
+| `configs/smoke_dataset.yaml` | 128×128 → 16×16 | Variante haute résolution historique, à utiliser avec le checkpoint correspondant |
+| `configs/smoke_dataset_optimized.yaml` | 64×64 → 8×8 | Variante temporelle plus longue avec conditionnement renforcé |
 
-#### `configs/smoke_dataset_vqgan.yaml`
-Configuration Flow Matching :
-- Chemin dataset (`data.data_root`)
-- Chemin checkpoint VQGAN pré-entraîné (`model.autoencoder.ckpt_path`)
-- Architecture régresseur champ vectoriel
-- Hyperparamètres Flow Matching
+Les chemins de checkpoints et de datasets ont été rendus relatifs dans les fichiers de configuration. Ajustez-les seulement si vous placez les artefacts en dehors de la structure du dépôt.
 
 ---
 
@@ -361,7 +359,7 @@ Configuration Flow Matching :
 
 ### Vue d'ensemble
 
-1. **VQGAN** : Compression 128×128×3 → 16×16×256 avec reconstruction haute fidélité
+1. **VQGAN** : Compression 64×64×3 → 8×8×256 avec reconstruction haute fidélité
 2. **Flow Matching** : Dynamique temporelle dans l'espace latent (1 frame → 9 frames)
 
 ---
@@ -401,11 +399,13 @@ python train_vqgan.py \
 
 Points essentiels à configurer :
 
+La version documentée ici est celle utilisée dans le dépôt actuel: 64×64 d'entrée et un espace latent 8×8. Si vous voulez refaire la variante 128×128/16×16, utilisez `configs/smoke_dataset.yaml` avec un checkpoint compatible.
+
 ```yaml
 data:
-  data_root: /absolute/path/to/final_dataset  # ⚠️ Chemin absolu
-  input_size: 128
-  crop_size: 128
+  data_root: final_dataset
+  input_size: 64
+  crop_size: 64
   frames_per_sample: 1  # VQGAN traite frame par frame
 
 model:
@@ -571,16 +571,18 @@ python train.py \
     --wandb
 ```
 
+Le point d’entrée `train.py` exécute directement un entraînement mono-GPU quand `--num-gpus 1` est passé, puis passe à `torch.multiprocessing.spawn` au-delà. C'est utile pour valider indépendamment un seul GPU avant d'étendre à un lancement distribué.
+
 ### Configuration YAML (`smoke_dataset_vqgan.yaml`)
 
 Points **critiques** à configurer :
 
 ```yaml
 data:
-  data_root: /absolute/path/to/final_dataset  # ⚠️ Chemin absolu
-  input_size: 128
-  crop_size: 128
-  frames_per_sample: 10  # 1 contexte + 9 à générer
+  data_root: final_dataset
+  input_size: 64
+  crop_size: 64
+  frames_per_sample: 16  # 10 observations + 6 futures
   random_horizontal_flip: True
 
 model:
@@ -588,7 +590,7 @@ model:
   
   vector_field_regressor:
     state_size: 256      # ⚠️ DOIT = VQGAN embedding_dimension
-    state_res: [16, 16]  # ⚠️ DOIT = résolution latente VQGAN (128/8 = 16)
+    state_res: [8, 8]  # ⚠️ DOIT = résolution latente VQGAN (64/8 = 8)
     inner_dim: 512       # Dimension interne transformer
     depth: 6             # Profondeur temporelle (6-12)
     mid_depth: 2
@@ -596,8 +598,8 @@ model:
   
   autoencoder:
     type: "ours"
-    # ⚠️ CHEMIN ABSOLU VERS CHECKPOINT VQGAN PRÉ-ENTRAÎNÉ
-    ckpt_path: /absolute/path/to/runs_vqgan/smoke_vqgan_v1/checkpoints/vqgan_epoch_50.ckpt
+    # ⚠️ Chemin relatif vers le checkpoint VQGAN pré-entraîné
+    ckpt_path: runs_vqgan/vqgan_smoke_vqgan_v2/checkpoints/vqgan_epoch_45.ckpt
     
     # ⚠️ Copier exactement la config du VQGAN ci-dessus
     encoder:
@@ -626,7 +628,7 @@ training:
   
   num_observations: 10
   condition_frames: 1
-  frames_to_generate: 9
+  frames_to_generate: 6
   
   loss_weights:
     flow_matching_loss: 1.0
