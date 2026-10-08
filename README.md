@@ -6,7 +6,7 @@ Ce dépôt contient le code et les ressources pour la modélisation des panaches
 
 ### Reconstruction VQGAN
 
-![Comparaison reconstruction VQGAN](media/vqgan_reconstruction_comparison.png)
+![Comparaison reconstruction VQGAN](media/custom_recon_epoch_56.png)
 
 *Comparaison originale vs reconstruction VQGAN : haute fidélité de reproduction des panaches de fumée*
 
