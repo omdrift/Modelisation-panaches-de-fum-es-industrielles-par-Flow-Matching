@@ -109,7 +109,7 @@ class Evaluator:
             model_outputs["generated_observations"] = dmodel.generate_frames(
                 observations=observations[:min(4, observations.size(0)), :self.config["condition_frames"]],
                 num_frames=self.config["frames_to_generate"],
-                steps=100,
+                steps=int(self.config.get("steps", 100)),
                 verbose=self.is_main_process)
             self.log_media(model_outputs, logger)
 

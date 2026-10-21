@@ -18,7 +18,7 @@ from tqdm import tqdm
 from pymatting import estimate_alpha_cf
 
 # Add project root to path
-project_root = Path(__file__).parent
+project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root))
 
 from lutils.configuration import Configuration

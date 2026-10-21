@@ -1,3 +1,13 @@
+# Historical design notes
+
+The proposals and configuration excerpts below describe earlier experiments.
+For current commands, artifact paths, horizons and implemented metrics, use the
+[README](../README.md) and [current pipeline](SMOKE_FLOW_MATCHING_PIPELINE.md).
+Do not assume that code proposed below is already active or that historical
+checkpoints are included in the repository.
+
+---
+
 # Tailoring Flow Matching for Smoke Prediction
 
 ## Problem Characteristics

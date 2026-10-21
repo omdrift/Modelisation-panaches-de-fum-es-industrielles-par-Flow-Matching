@@ -1,5 +1,6 @@
 import os
 import random
+import shutil
 from argparse import Namespace as ArgsNamespace
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from model.model import Model
 from training.checkpoints import load_checkpoint as _load_checkpoint
 from training.checkpoints import save_checkpoint as _save_checkpoint
 from training.trainer import Trainer
+from tools.validate_config import validate_config
 
 
 def _resolve_split_file(data_root: str, split: str) -> str:
@@ -65,6 +67,9 @@ def _set_seed(seed: int, rank: int):
 
 
 def train(rank: int, args: ArgsNamespace, temp_dir: str):
+    errors = validate_config(Path(args.config))
+    if errors:
+        raise ValueError("Invalid training inputs:\n" + "\n".join(errors))
     config = Configuration(args.config)
 
     if args.num_gpus > 1:
@@ -111,6 +116,9 @@ def train(rank: int, args: ArgsNamespace, temp_dir: str):
 
     run_dir = Path("runs") / args.run_name
     run_dir.mkdir(parents=True, exist_ok=True)
+    config_snapshot = run_dir / "config.yaml"
+    if rank == 0 and not config_snapshot.exists():
+        shutil.copy2(args.config, config_snapshot)
 
     initial_step = 0
     if args.resume_step is not None:

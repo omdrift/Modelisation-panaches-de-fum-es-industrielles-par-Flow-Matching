@@ -38,6 +38,8 @@ model:
       commitment_cost: 0.1
 
 training:
+  eval_every: 1000
+  checkpoint_every: 2000
   batching:
     batch_size: 8
     num_workers: 2

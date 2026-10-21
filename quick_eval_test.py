@@ -1,25 +1,35 @@
 #!/usr/bin/env python3
-"""
-Quick test of the evaluation script on a small subset
-"""
+"""Run the evaluation CLI with a small default sample count and explicit artifacts."""
 
+import argparse
+from pathlib import Path
 import subprocess
 import sys
 
-# Test with a small number of samples
-cmd = [
-    sys.executable,
-    "evaluate_flow_matching.py",
-    "--checkpoint", "runs/smoke_dataset_run-flow_smoke_vqgan/checkpoints/step_40000.pth",
-    "--config", "configs/smoke_dataset.yaml",
-    "--num-samples", "3",
-    "--num-test-videos", "5",
-    "--output-dir", "test_evaluation",
-]
 
-print("Running quick evaluation test...")
-print(" ".join(cmd))
-print()
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--checkpoint", required=True, type=Path)
+    parser.add_argument("--config", required=True, type=Path)
+    parser.add_argument("--num-samples", type=int, default=3)
+    parser.add_argument("--num-test-videos", type=int, default=5)
+    parser.add_argument("--split", choices=("train", "val", "test"), default="test")
+    parser.add_argument("--steps", type=int)
+    parser.add_argument("--device", choices=("cpu", "cuda"))
+    parser.add_argument("--output-dir", type=Path, default=Path("test_evaluation"))
+    args = parser.parse_args()
+    root = Path(__file__).resolve().parent
+    for name in ("checkpoint", "config"):
+        path = getattr(args, name)
+        path = path if path.is_absolute() else root / path
+        if not path.is_file():
+            parser.error(f"{name} not found: {path}")
+    command = [sys.executable, str(root / "evaluate_flow_matching.py")]
+    for key, value in vars(args).items():
+        if value is not None:
+            command.extend((f"--{key.replace('_', '-')}", str(value)))
+    return subprocess.run(command, check=False).returncode
 
-result = subprocess.run(cmd)
-sys.exit(result.returncode)
+
+if __name__ == "__main__":
+    raise SystemExit(main())

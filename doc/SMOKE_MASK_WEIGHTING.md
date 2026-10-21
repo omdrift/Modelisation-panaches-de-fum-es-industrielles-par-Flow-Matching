@@ -1,3 +1,11 @@
+# Historical weighting notes
+
+For current commands and artifact requirements, use the [README](../README.md).
+The tuning suggestions below are experimental; they do not establish measured
+improvements or the availability of any pretrained checkpoint.
+
+---
+
 # Smoke Mask Weighting pour Flow Matching
 
 ## Problème

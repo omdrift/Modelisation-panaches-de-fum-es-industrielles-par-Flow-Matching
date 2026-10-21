@@ -25,6 +25,7 @@ from lutils.dict_wrapper import DictWrapper
 from model.vqgan.vqvae import build_vqvae
 from model.vqgan.discriminator import build_discriminator, hinge_d_loss, adopt_weight
 from model.vqgan.losses import build_perceptual_loss
+from tools.validate_config import validate_config
 
 
 def parse_args():
@@ -49,14 +50,17 @@ def parse_args():
     parser.add_argument("--disc-weight-max", type=float, default=0.75, help="Max discriminator loss weight")
     
     # Smoke filtering
-    parser.add_argument("--min-smoke-pixels", type=float, default=0.0003, help="Minimum smoke pixel ratio (0.01%)")
-    parser.add_argument("--max-smoke-pixels", type=float, default=0.85, help="Maximum smoke pixel ratio (85%)")
+    parser.add_argument("--min-smoke-pixels", type=float, default=0.0003, help="Minimum smoke pixel ratio (0.03%%)")
+    parser.add_argument("--max-smoke-pixels", type=float, default=0.85, help="Maximum smoke pixel ratio (85%%)")
     
     return parser.parse_args()
 
 
 def train_vqgan():
     args = parse_args()
+    errors = validate_config(Path(args.config))
+    if errors:
+        raise ValueError("Invalid training inputs:\n" + "\n".join(errors))
     
     # --- Setup ---
     config = Configuration(args.config)

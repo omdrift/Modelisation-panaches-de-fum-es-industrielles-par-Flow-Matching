@@ -27,7 +27,7 @@ def extract_foreground(video_path, num_frames=5):
     cap.release()
     
     if len(frames) < num_frames:
-        return None, None, None
+        return None, None, None, None
     
     # Select evenly spaced frames
     indices = np.linspace(0, len(frames)-1, num_frames, dtype=int)
@@ -215,6 +215,7 @@ def visualize_comparison(video_path, checkpoint_path, config_path, output_path, 
     # Load model
     print(f"Loading VQGAN from {checkpoint_path}")
     vqgan = load_vqgan(checkpoint_path, config_path).to(device)
+    crop_size = int(Configuration(config_path)["data"]["crop_size"])
     
     # Extract foregrounds
     print(f"Processing video: {video_path}")
@@ -228,7 +229,7 @@ def visualize_comparison(video_path, checkpoint_path, config_path, output_path, 
     results = []
     for i, (fg, alpha, original) in enumerate(zip(foregrounds, alphas, originals)):
         print(f"Processing frame {i+1}/{num_frames}")
-        fg_viz, recon_fg, comp_orig, comp_recon = process_frame(fg, alpha, background, vqgan, device)
+        fg_viz, recon_fg, comp_orig, comp_recon = process_frame(fg, alpha, background, vqgan, device, crop_size=crop_size)
         results.append({
             'original': original,
             'fg_extracted': fg_viz,

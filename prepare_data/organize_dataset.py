@@ -1,3 +1,4 @@
+import argparse
 import os
 import shutil
 import json
@@ -6,6 +7,23 @@ from glob import glob
 from tqdm import tqdm
 
 def organize_dataset(src_root, dst_root, train_ratio=0.8, val_ratio=0.1):
+    if not (0 < train_ratio < 1 and 0 < val_ratio < 1 and train_ratio + val_ratio < 1):
+        raise ValueError("train_ratio and val_ratio must be positive and sum to less than 1")
+    if not os.path.isdir(src_root):
+        raise FileNotFoundError(f"Frame directory not found: {src_root}")
+    if os.path.exists(dst_root) and os.listdir(dst_root):
+        raise FileExistsError(f"Destination is not empty: {dst_root}. Use a new directory to preserve existing splits.")
+    video_folders = sorted(
+        name for name in os.listdir(src_root)
+        if os.path.isdir(os.path.join(src_root, name))
+        and not name.startswith(('_', '.'))
+        and glob(os.path.join(src_root, name, '*.png'))
+    )
+    random.Random(42).shuffle(video_folders)
+    split_idx1 = int(len(video_folders) * train_ratio)
+    split_idx2 = split_idx1 + int(len(video_folders) * val_ratio)
+    if not (0 < split_idx1 < split_idx2 < len(video_folders)):
+        raise ValueError("Not enough non-empty video directories to create three non-empty splits")
     # 1. Setup Target Directories
     train_path = os.path.join(dst_root, "train")
     test_path = os.path.join(dst_root, "test")
@@ -13,17 +31,6 @@ def organize_dataset(src_root, dst_root, train_ratio=0.8, val_ratio=0.1):
     os.makedirs(train_path, exist_ok=True)
     os.makedirs(test_path, exist_ok=True)
     os.makedirs(val_path, exist_ok=True)
-
-    # List all video folders, excluding hidden/internal folders
-    video_folders = [f for f in os.listdir(src_root) if os.path.isdir(os.path.join(src_root, f)) and not f.startswith('_')]
-    random.seed(42) # For reproducibility
-    random.shuffle(video_folders) 
-
-    if train_ratio + val_ratio >= 1.0:
-        raise ValueError("train_ratio + val_ratio must be less than 1.0")
-
-    split_idx1 = int(len(video_folders) * train_ratio)
-    split_idx2 = split_idx1 + int(len(video_folders) * val_ratio)
 
     train_folders = video_folders[:split_idx1]
     val_folders = video_folders[split_idx1:split_idx2]
@@ -73,7 +80,15 @@ def organize_dataset(src_root, dst_root, train_ratio=0.8, val_ratio=0.1):
 
     print(f"Labels saved: train.txt ({len(train_labels)} lines), val.txt ({len(val_labels)} lines) and test.txt ({len(test_labels)} lines)")
 
-SOURCE_DIR = "frames/"
-DEST_DIR = "final_dataset/"
+def main():
+    parser = argparse.ArgumentParser(description="Create frame lists and train/val/test splits by source video.")
+    parser.add_argument("--src-root", default="frames")
+    parser.add_argument("--dst-root", default="final_dataset")
+    parser.add_argument("--train-ratio", type=float, default=0.8)
+    parser.add_argument("--val-ratio", type=float, default=0.1)
+    args = parser.parse_args()
+    organize_dataset(args.src_root, args.dst_root, args.train_ratio, args.val_ratio)
 
-organize_dataset(SOURCE_DIR, DEST_DIR)
+
+if __name__ == "__main__":
+    main()

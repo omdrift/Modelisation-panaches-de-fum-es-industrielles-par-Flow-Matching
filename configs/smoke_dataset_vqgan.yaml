@@ -4,7 +4,7 @@ data:
   data_root: final_dataset
   input_size: 64
   crop_size: 64
-  frames_per_sample: 16  # Predict 16 frames for better smoke dynamics
+  frames_per_sample: 16  # Evaluation window: 10 observations + 6 future frames
   random_horizontal_flip: True
 
 model:
@@ -19,7 +19,7 @@ model:
   autoencoder:
     type: "ours"
     # VQGAN checkpoint trained with adversarial loss
-    ckpt_path: runs_vqgan/vqgan_smoke_vqgan_v2/vqgan_epoch_45.ckpt
+    ckpt_path: runs_vqgan/vqgan_64_baseline/checkpoints/vqgan_epoch_50.ckpt
     encoder:
       in_channels: 3
       out_channels: 256
@@ -34,6 +34,8 @@ model:
       commitment_cost: 0.1
 
 training:
+  eval_every: 1000
+  checkpoint_every: 2000
   batching:
     batch_size: 24        # Optimized for 64x64
     num_workers: 2
@@ -41,10 +43,10 @@ training:
     learning_rate: 0.0001
     weight_decay: 0.000005
     num_warmup_steps: 1000
-    # Target ~60 epochs: dataset_size (128680) * 60 / batch_size (24) ≈ 100k steps
+    # Fixed optimizer-step budget; clips, not individual frames, are dataset entries
     num_training_steps: 150000
-  num_observations: 10   # First 10 frames used for conditioning
-  condition_frames: 1    # Use 1 reference frame
+  num_observations: 10   # Training window used by the target/reference/context sampler
+  condition_frames: 1    # Initial frames supplied during evaluation
   frames_to_generate: 6  # Generate next 6 frames (10+6=16 total)
   loss_weights:
     flow_matching_loss: 1.0

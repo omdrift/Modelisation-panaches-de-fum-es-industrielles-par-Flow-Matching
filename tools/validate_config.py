@@ -114,6 +114,19 @@ def validate_config(
             data_root = ROOT / data_root
         if not data_root.exists():
             errors.append(f"data.data_root does not exist: {data_root}")
+        elif not data_root.is_dir():
+            errors.append(f"data.data_root is not a directory: {data_root}")
+        else:
+            # VQGAN reads all three <split>.txt files explicitly. Flow Matching
+            # training accepts either list convention and uses train/val only.
+            splits = ("train", "val", "test") if "encoder" in config else ("train", "val")
+            for split in splits:
+                names = (f"{split}.txt",) if "encoder" in config else (f"{split}_files.txt", f"{split}.txt")
+                split_file = next((data_root / name for name in names if (data_root / name).is_file()), None)
+                if split_file is None:
+                    errors.append(f"data: missing {split} split list in {data_root}; expected {' or '.join(names)}")
+                elif not split_file.read_text(encoding="utf-8").strip():
+                    errors.append(f"data: empty split list: {split_file}")
 
     checkpoint = autoencoder.get("ckpt_path")
     if check_checkpoints and checkpoint:

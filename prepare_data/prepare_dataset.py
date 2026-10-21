@@ -1,3 +1,4 @@
+import argparse
 import os
 import cv2
 import numpy as np
@@ -10,15 +11,16 @@ except ImportError:
     estimate_alpha_cf = None
 
 def generate_optimized_smoke_dataset(input_dir, output_dir, intensity_gain=1.2, show_monitor=True):
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
     video_paths = sorted(glob(os.path.join(input_dir, "*.mp4")))
+    if not video_paths:
+        raise FileNotFoundError(f"No MP4 videos found in {input_dir}")
+    os.makedirs(output_dir, exist_ok=True)
     print(f"Extraction : {len(video_paths)} vidéos trouvées.")
 
     if estimate_alpha_cf is None:
         print("Warning: 'pymatting' is not installed. Falling back to trimap-only alpha extraction.")
 
+    monitor_opened = False
     for v_path in tqdm(video_paths):
         video_name = os.path.basename(v_path).split('.')[0]
         video_output_path = os.path.join(output_dir, video_name)
@@ -90,15 +92,31 @@ def generate_optimized_smoke_dataset(input_dir, output_dir, intensity_gain=1.2, 
                 if show_monitor and i % 5 == 0:
                     # --- FIX : cv2.imshow attend aussi du BGR ---
                     cv2.imshow('MONITOR', save_img)
+                    monitor_opened = True
                     if cv2.waitKey(1) == 27: show_monitor = False
 
             except Exception:
                 continue
     
-    cv2.destroyAllWindows()
+    if monitor_opened:
+        cv2.destroyAllWindows()
 
-# Paramètres de lancement
-INPUT_DIR = "smoke_videos/"
-OUTPUT_DIR = "frames/"
 
-generate_optimized_smoke_dataset(INPUT_DIR, OUTPUT_DIR, intensity_gain=1.3)
+def main():
+    parser = argparse.ArgumentParser(description="Extract smoke frames from MP4 videos.")
+    parser.add_argument("--input-dir", default="smoke_videos")
+    parser.add_argument("--output-dir", default="frames")
+    parser.add_argument("--intensity-gain", type=float, default=1.3)
+    parser.add_argument("--show-monitor", action="store_true", help="Open an OpenCV preview window")
+    parser.add_argument("--require-matting", action="store_true", help="Fail instead of using the trimap fallback")
+    args = parser.parse_args()
+    if args.require_matting and estimate_alpha_cf is None:
+        parser.error("pymatting is required; install it before preparing the dataset")
+    generate_optimized_smoke_dataset(
+        args.input_dir, args.output_dir,
+        intensity_gain=args.intensity_gain, show_monitor=args.show_monitor,
+    )
+
+
+if __name__ == "__main__":
+    main()

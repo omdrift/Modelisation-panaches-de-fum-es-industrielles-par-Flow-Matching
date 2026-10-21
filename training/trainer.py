@@ -47,6 +47,11 @@ class Trainer:
             pin_memory=True,
             drop_last=True,
         )
+        if len(self.dataloader) == 0:
+            raise ValueError(
+                f"No training batches: {len(dataset)} usable clips for batch_size="
+                f"{self.config['batching']['batch_size']}. Reduce batch_size or prepare more clips."
+            )
 
         self.flow_matching_loss = nn.MSELoss(reduction="none")
         self.running_means = RunningMean()
