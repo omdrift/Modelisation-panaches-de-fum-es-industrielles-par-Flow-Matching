@@ -287,7 +287,8 @@ def test_stopping_waits_for_warmup_or_adversarial_activation(tiny_training, meth
 
 
 @pytest.mark.parametrize('method', ['vqgan', 'simvp', 'flow_uniform', 'flow_alpha'])
-def test_legacy_opt_in_continues_from_saved_optimizer_step(tiny_training, tmp_path, monkeypatch, method):
+@pytest.mark.parametrize('already_complete', [False, True])
+def test_legacy_opt_in_continues_from_saved_optimizer_step(tiny_training, tmp_path, monkeypatch, method, already_complete):
     from scientific import runner
     from scientific.protocol import _source_manifest
     from tools.enable_early_stopping import enable
@@ -315,12 +316,17 @@ def test_legacy_opt_in_continues_from_saved_optimizer_step(tiny_training, tmp_pa
             raise RuntimeError('saved legacy checkpoint')
         return original_log(directory, step, values, *args)
 
-    monkeypatch.setattr(runner, 'record_metrics', interrupted)
-    with pytest.raises(RuntimeError, match='saved legacy checkpoint'):
+    if already_complete:
         train(method)
+    else:
+        monkeypatch.setattr(runner, 'record_metrics', interrupted)
+        with pytest.raises(RuntimeError, match='saved legacy checkpoint'):
+            train(method)
     checkpoint = latest_checkpoint(run)
-    assert torch.load(checkpoint, weights_only=True)['step'] == 4
+    assert torch.load(checkpoint, weights_only=True)['step'] == (12 if already_complete else 4)
     original_hash = file_hash(checkpoint)
+    selected_hash = file_hash(run / 'best.pth')
+    metadata_hash = file_hash(run / 'run.json')
     enable(campaign, before, source_root=after, patience=2, min_updates=0)
     assert file_hash(checkpoint) == original_hash
     updated = load_protocol(campaign / 'protocol.yaml')
@@ -328,11 +334,15 @@ def test_legacy_opt_in_continues_from_saved_optimizer_step(tiny_training, tmp_pa
     cfg.update(updated)
     source['sha'] = digest(_source_manifest(after))
     monkeypatch.setattr(runner, 'record_metrics', original_log)
-    controls['pending_validation'] = True
+    controls['pending_validation'] = not already_complete
+    monkeypatch.setattr(runner, 'validate_artifact', lambda path, *a: validate(method) if path == run / 'best.pth' else None)
     train(method, checkpoint)
-    assert json.loads((run / 'run.json').read_text())['completed_updates'] == 6
+    assert json.loads((run / 'run.json').read_text())['completed_updates'] == (12 if already_complete else 6)
     selected = validate(method)
-    assert selected['extra']['completion']['termination_reason'] == 'early_stopping'
+    assert selected['extra']['completion']['termination_reason'] == ('max_updates' if already_complete else 'early_stopping')
+    if already_complete:
+        assert file_hash(run / 'best.pth') == selected_hash
+        assert file_hash(run / 'run.json') == metadata_hash
     if method != 'vqgan':
         monkeypatch.setattr(runner, 'validate_artifact', lambda *a: selected)
         monkeypatch.setattr(runner, 'predict', lambda model, method, context, cfg, generator=None:
