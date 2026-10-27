@@ -12,7 +12,9 @@ def test_main_workspace_is_small_and_detailed_groups_are_collapsed():
     plan = section_plan('vqgan')
     assert 'Lire les courbes' in plan[0]['markdown'][0]
     assert 'quatre fois' in plan[0]['markdown'][0]
-    assert len(plan[1]['charts']) == 6
+    assert len(plan[1]['charts']) == 7
+    assert any(keys == ['early_stopping/bad_checks', 'early_stopping/patience'] for _, keys in plan[1]['charts'])
+    assert 'patience' in plan[0]['markdown'][0]
     assert all(section['open'] for section in plan[:3])
     assert all(not section['open'] for section in plan[3:])
     slices = plan[3]
