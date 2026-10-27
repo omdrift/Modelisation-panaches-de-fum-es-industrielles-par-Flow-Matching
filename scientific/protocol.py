@@ -86,6 +86,8 @@ def load_protocol(path='configs/scientific_protocol.yaml') -> dict:
     validate_settings(cfg['preprocessing'])
     from scientific.hyperparameters import autoencoder_settings
     autoencoder_settings(cfg)
+    from scientific.early_stopping import settings as early_stopping_settings
+    early_stopping_settings(cfg)
     if cfg['seeds'] != [17, 42, 2026]:
         raise ValueError('Protocol v1 fixes the predictor seeds')
     if cfg['evaluation']['realizations'] != 4 or cfg['evaluation']['ode_grid_points'] < 2:

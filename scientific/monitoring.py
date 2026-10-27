@@ -85,7 +85,7 @@ class WandbMonitor:
                 for name in ('train_eval/lpips', 'validation/lpips', 'validation/smoke_mse',
                              'validation/background_mse', 'validation/errors_and_masks',
                              'generalization/lpips_gap', 'validation/codebook/perplexity',
-                             'validation/codebook/used_fraction'):
+                             'validation/codebook/used_fraction', 'early_stopping/bad_checks'):
                     self.run.define_metric(name, step_metric='global_step', hidden=False)
                 self.identity = dict(id=run_id, project=self.options.project, entity=self.run.entity,
                                      mode=self.options.mode, directory=str(session), url=self.run.url if self.options.mode == 'online' else None,

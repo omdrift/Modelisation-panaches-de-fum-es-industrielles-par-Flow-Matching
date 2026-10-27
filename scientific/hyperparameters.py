@@ -54,6 +54,8 @@ def training_description(cfg: dict, method: str) -> dict:
     common = dict(method=method, max_updates=training['max_updates'],
                   effective_batch_size=training['effective_batch_size'],
                   status='exploratory_initial_settings_not_smoke_calibrated')
+    from scientific.early_stopping import settings as early_stopping_settings
+    common['early_stopping'] = early_stopping_settings(cfg)
     if method == 'vqgan':
         settings = autoencoder_settings(cfg)
         return common | dict(optimizer='AdamW', settings=settings,
