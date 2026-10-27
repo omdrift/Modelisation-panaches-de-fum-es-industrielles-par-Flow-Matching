@@ -8,6 +8,25 @@ import pytest
 from tools.configure_wandb import curate_spec, section_plan
 
 
+def test_campaign_workspace_explains_pending_stages_and_displays_progress_and_status():
+    plan = section_plan('campaign_monitor')
+    keys = [key for section in plan for _, keys in section.get('charts', []) for key in keys]
+    assert 'campaign/completed_stages' in keys and 'campaign/total_stages' in keys
+    assert 'evaluation/completed_runs' in keys
+    assert all('validation/lpips' != key for key in keys)
+    assert any('observer/status' in section.get('media', []) for section in plan)
+    assert all(section.get('x') == 'observer/elapsed_seconds' for section in plan if section.get('charts'))
+    guide = plan[0]['markdown'][0]
+    assert 'non évalué' in guide and 'synthétique' in guide
+
+
+@pytest.mark.parametrize('method', ['flow_uniform', 'flow_alpha'])
+def test_flow_guide_distinguishes_validation_draw_from_final_test_samples(method):
+    guide = section_plan(method)[0]['markdown'][0]
+    assert '1 réalisation fixe' in guide and '4 réalisations' in guide
+    assert 'gelé' in guide
+
+
 def test_main_workspace_is_small_and_detailed_groups_are_collapsed():
     plan = section_plan('vqgan')
     assert 'Lire les courbes' in plan[0]['markdown'][0]
