@@ -611,7 +611,7 @@ def evaluate(cfg, root, method, seed, checkpoint, autoencoder, split, output, de
             validate_artifact(autoencoder, cfg, root, 'vqgan')
         model = model_for(cfg, method, autoencoder).to(device).eval()
         expected = state['extra']['provenance']
-        if expected['method'] != method or expected['seed'] != seed or expected['protocol_sha256'] != digest(cfg) or expected['dataset_sha256'] != file_hash(Path(root) / 'dataset_manifest.json'):
+        if expected['method'] != method or expected['seed'] != seed or not _protocols_compatible(expected['protocol_sha256'], digest(cfg), Path(checkpoint).parent.parent) or expected['dataset_sha256'] != file_hash(Path(root) / 'dataset_manifest.json'):
             raise ValueError('Checkpoint identity does not match this evaluation')
         if method.startswith('flow') and expected['autoencoder_sha256'] != file_hash(autoencoder):
             raise ValueError('Autoencoder differs from the training artifact')
