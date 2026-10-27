@@ -61,6 +61,10 @@ class WandbMonitor:
         entity = self.options.entity or (previous['entity'] if previous else None)
         session = self.directory / 'tracking' / uuid.uuid4().hex[:12]
         session.mkdir(parents=True)
+        configuration = {'protocol': self.cfg, 'method': self.method, 'seed': self.seed}
+        if self.method in ('vqgan', 'simvp', 'flow_uniform', 'flow_alpha'):
+            from scientific.hyperparameters import training_description
+            configuration['effective_training'] = training_description(self.cfg, self.method)
         try:
             with preserve_rng():
                 self.run = wandb.init(
@@ -68,14 +72,21 @@ class WandbMonitor:
                     name=self.options.name or f'{self.directory.parent.name}-{self.method}-{self.seed}',
                     group=self.options.group or self.directory.parent.name, job_type=self.method,
                     mode=self.options.mode, resume='allow' if self.options.mode == 'online' else None,
-                    dir=str(session), config={'protocol': self.cfg, 'method': self.method, 'seed': self.seed},
+                    dir=str(session), config=configuration,
                     save_code=False,
                     settings=wandb.Settings(disable_code=True, disable_git=True, disable_job_creation=True, console='off', init_timeout=30),
                 )
                 if self.run is None:
                     raise RuntimeError('WandB did not initialize a run')
-                self.run.define_metric('global_step')
-                self.run.define_metric('*', step_metric='global_step')
+                self.run.define_metric('global_step', hidden=True)
+                self.run.define_metric('*', step_metric='global_step', hidden=True)
+                # Keep new automatic workspaces small. The curated workspace
+                # can still query every logged metric, including hidden ones.
+                for name in ('train_eval/lpips', 'validation/lpips', 'validation/smoke_mse',
+                             'validation/background_mse', 'validation/errors_and_masks',
+                             'generalization/lpips_gap', 'validation/codebook/perplexity',
+                             'validation/codebook/used_fraction'):
+                    self.run.define_metric(name, step_metric='global_step', hidden=False)
                 self.identity = dict(id=run_id, project=self.options.project, entity=self.run.entity,
                                      mode=self.options.mode, directory=str(session), url=self.run.url if self.options.mode == 'online' else None,
                                      sdk_version=wandb.__version__)
@@ -116,6 +127,16 @@ class WandbMonitor:
 def image_panel(real, reconstructed):
     """Rows are examples, left/right are true/reconstructed RGB; explicit uint8."""
     rows = [torch.cat((left, right), dim=-1) for left, right in zip(real[:2], reconstructed[:2])]
+    pixels = torch.cat(rows, dim=-2).detach().float().clamp(-1, 1)
+    return ((pixels.permute(1, 2, 0).cpu().numpy() + 1) * 127.5).round().astype(np.uint8)
+
+
+def error_panel(real, reconstructed, alpha):
+    """Columns: true RGB, reconstruction, absolute error, estimated mask."""
+    real, reconstructed = real[:4], reconstructed[:4].clamp(-1, 1)
+    errors = ((real - reconstructed) / 2).abs().mean(1, keepdim=True).expand(-1, 3, -1, -1) * 2 - 1
+    masks = alpha[:4].expand(-1, 3, -1, -1) * 2 - 1
+    rows = [torch.cat(images, dim=-1) for images in zip(real, reconstructed, errors, masks)]
     pixels = torch.cat(rows, dim=-2).detach().float().clamp(-1, 1)
     return ((pixels.permute(1, 2, 0).cpu().numpy() + 1) * 127.5).round().astype(np.uint8)
 

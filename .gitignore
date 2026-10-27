@@ -1,51 +1,32 @@
-### AL ###
-#Template for AL projects for Dynamics 365 Business Central
-#launch.json folder
-.vscode/
-#Cache folder
-.alcache/
-#Symbols folder
-.alpackages/
-#Snapshots folder
-.snapshots/
-#Testing Output folder
-.output/
-#Extension App-file
-*.app
-#Rapid Application Development File
-rad.json
-#Translation Base-file
-*.g.xlf
-#License-file
-*.flf
-#Test results file
-TestResults.
-frames/
-.venv
-smoke_frames_2
-data/
+# Python and local tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+.venv-dashboard/
 
-__pycache__
+# Local data, model caches and experiments
+smoke_videos/
+scientific_data/
+scientific_models/
+runs_scientific/
+data/
+frames/
+wandb/
 *.pth
 *.ckpt
-runs_vqvae
+*.safetensors
 
-runs_vqgan
-wandb
+# Local credentials and editor files
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
 
-final_dataset
-smoke_frames
-smoke_videos
-
-
-isolated_smoke_frame
-runs
-presentation_*
-
-
-presentation_figures
-# Scientific campaign artifacts (publish manifests/metrics separately).
-scientific_data/
-runs_scientific/
-scientific_models/
-.pytest_cache/
+# Generated release material
+dist/
+build/
+*.egg-info/

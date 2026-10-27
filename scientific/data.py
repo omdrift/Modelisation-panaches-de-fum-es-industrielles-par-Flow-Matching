@@ -58,10 +58,10 @@ def prepare(metadata: list[dict], video_root: Path, output: Path, cfg: dict, met
         write_json(declaration, identity)
     records, events, tasks = [], [], []
 
-    def checkpoint(event, record=None):
+    def checkpoint(event, record=None, completed=None):
         with journal.open('a') as stream:
             stream.write(json.dumps(dict(event=event, record=record), allow_nan=False) + '\n')
-        write_json(output / 'progress.json', dict(completed=completed, total=len(tasks), video_id=event['video_id']))
+        write_json(output / 'progress.json', dict(completed=completed or len(events), total=len(tasks), video_id=event['video_id']))
 
     # Account for all metadata, but estimate time only over actual source videos.
     for item in sorted(metadata, key=lambda r: r['id']):
@@ -107,7 +107,7 @@ def prepare(metadata: list[dict], video_root: Path, output: Path, cfg: dict, met
         if len(decoded) != expected_count or len(decoded) != cfg['task']['clip_frames']:
             event['status'] = 'decode_count_mismatch' if len(decoded) != expected_count else 'unexpected_clip_length'
             events.append(event)
-            checkpoint(event)
+            checkpoint(event, completed=completed)
             continue
         parts = item['file_name'].split('-')
         start, end = int(parts[-2]), int(parts[-1])
@@ -129,7 +129,7 @@ def prepare(metadata: list[dict], video_root: Path, output: Path, cfg: dict, met
             np.savez_compressed(output / relative, raw_frames=raw)
             event.update(status='segmentation_failed', raw_path=relative, reason=str(exc))
             events.append(event)
-            checkpoint(event)
+            checkpoint(event, completed=completed)
             continue
         # Segment at native resolution, then reduce RGB×mask and mask separately.
         smoke = np.stack([cv2.resize(frame, (64, 64), interpolation=cv2.INTER_AREA) for frame in smoke])
@@ -140,7 +140,7 @@ def prepare(metadata: list[dict], video_root: Path, output: Path, cfg: dict, met
         records.append(dict(window_id=window_id, video_id=item['id'], split=split, date='-'.join(parts[2:5]), camera_id=item['camera_id'], view_id=item['view_id'], frame_count=len(decoded), frame_indices=indices, timestamps=times, timestamp_basis='linear_source_endpoints_not_playback_fps', path=relative, sha256=file_hash(output / relative), source_sha256=event['source_sha256'], extraction_sha256=digest(extraction_identity), source_resolution=list(source.shape[1:3])))
         event.update(status='prepared', clips=1)
         events.append(event)
-        checkpoint(event, records[-1])
+        checkpoint(event, records[-1], completed)
     selection = {}
     for split in ('train', 'val', 'test_dates', 'test_views'):
         subset = [r for r in records if r['split'] == split]

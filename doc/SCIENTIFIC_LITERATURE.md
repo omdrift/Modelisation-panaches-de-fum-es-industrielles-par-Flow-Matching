@@ -1,4 +1,4 @@
-# Références scientifiques
+# Industrial Plume Forecasting — références et portée
 
 Cette sélection de sources primaires documente les composants de l'étude. Elle ne constitue pas une revue systématique exhaustive. Les références BibTeX sont dans [references.bib](references.bib).
 
@@ -15,5 +15,6 @@ Cette sélection de sources primaires documente les composants de l'étude. Elle
 | Unterthiner et al., FVD, prépublication | [Article](https://arxiv.org/abs/1812.01717) | Distance distributionnelle vidéo réservée à une extension dimensionnée. |
 | Lüddecke et Ecker, CLIPSeg, CVPR 2022 | [Article](https://arxiv.org/abs/2112.10003), [API 4.49](https://huggingface.co/docs/transformers/v4.49.0/en/model_doc/clipseg) | Segmentation conditionnée par texte ; scores sémantiques et non opacité physique. |
 | He, Sun et Tang, Guided Image Filtering, ECCV 2010 | [Article des auteurs](https://people.csail.mit.edu/kaiming/publications/eccv10guidedfilter.pdf) | Raffinement spatial par luminance ; aucune garantie de cohérence temporelle. |
+| Cawley et Talbot, JMLR 2010 | [Article](https://jmlr.csail.mit.edu/beta/papers/v11/cawley10a.html) | Surajustement du critère de sélection sur une validation finie ; justifie la séparation entre réglages et évaluation finale. |
 
 Avant de rédiger l'article, compléter la recherche sur la prédiction vidéo de fumée, le Flow Matching latent et l'évaluation des prévisions stochastiques. Consigner les requêtes, critères d'inclusion et sources retenues. Distinguer détection, génération conditionnelle, simulation physique et prédiction visuelle. Toute revendication de nouveauté doit être étayée par cette revue et par les expériences.

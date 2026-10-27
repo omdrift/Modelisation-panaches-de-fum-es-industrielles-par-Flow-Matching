@@ -82,11 +82,8 @@ def check_data(root, cfg=None):
     return dict(counts={s: len(d) for s, d in datasets.items()}, validation='automatic', clips_checked=sum(len(d) for d in datasets.values()))
 
 
-def summarize(inputs, output, cfg):
-    import numpy as np
-    from scientific.metrics import paired_bootstrap
-
-    context, horizon = forecast_task(cfg)
+def _read_evaluation_rows(inputs, cfg, horizon):
+    """Validate identities and complete coverage before any aggregation."""
     rows, runtimes = [], []
     identities = set()
     panels = {}
@@ -139,6 +136,13 @@ def summarize(inputs, output, cfg):
     unique = [(r['method'], r['split'], r['seed'], r['window_id'], r['horizon'], r['realization']) for r in rows]
     if len(unique) != len(set(unique)):
         raise ValueError('Duplicate metric rows / evaluations')
+    return rows, runtimes
+
+
+def _horizon_summaries(rows):
+    """Give each window/seed equal weight, retaining the reduction order."""
+    import numpy as np
+
     groups = defaultdict(list)
     for row in rows:
         groups[(row['method'], row['split'], row['horizon'])].append(row)
@@ -157,6 +161,13 @@ def summarize(inputs, output, cfg):
         entry['lpips_seed_means'] = seed_means
         entry['lpips_seed_std'] = float(np.std(seed_means, ddof=1)) if len(seed_means) > 1 else None
         summaries.append(entry)
+    return summaries
+
+
+def _paired_comparisons(rows, cfg):
+    """Compare methods only on their paired test windows."""
+    from scientific.metrics import paired_bootstrap
+
     comparisons = []
     for split in ('test_dates', 'test_views'):
         subset = [r for r in rows if r['split'] == split]
@@ -164,9 +175,13 @@ def summarize(inputs, output, cfg):
         for method, reference in [('flow_uniform', 'simvp'), ('flow_alpha', 'flow_uniform')]:
             if {method, reference} <= methods:
                 comparisons.append({'split': split} | paired_bootstrap(subset, method, reference, replicates=cfg['evaluation']['bootstrap_replicates']))
-    output = Path(output)
-    output.mkdir(parents=True, exist_ok=True)
-    complete_campaign = all({r['seed'] for r in rows if r['method'] == method and r['split'] == split} == set(cfg['seeds']) for method in METHODS for split in ('test_dates', 'test_views'))
+    return comparisons
+
+
+def _quality_cost_scores(rows, runtimes, horizon):
+    """Keep quality and measured generation cost on the same sample units."""
+    import numpy as np
+
     primary_scores = []
     for method, split in sorted({(r['method'], r['split']) for r in rows}):
         units = defaultdict(list)
@@ -175,23 +190,11 @@ def summarize(inputs, output, cfg):
                 units[(row['window_id'], row['seed'])].append(row['lpips'])
         costs = [r for r in runtimes if (r['method'], r['split']) == (method, split)]
         primary_scores.append(dict(method=method, split=split, horizon_count=horizon, lpips_mean_future_horizons=float(np.mean([np.mean(v) for v in units.values()])), generation_seconds_per_realization=float(np.mean([float(r['seconds']) for r in costs])), nfe_per_realization=float(np.mean([int(r['nfe']) for r in costs])), peak_memory_bytes=max(int(r['peak_memory_bytes']) for r in costs)))
-    write_json(output / 'summary.json', dict(status='complete_campaign' if complete_campaign else 'partial_campaign', primary_scores=primary_scores, summaries=summaries, comparisons=comparisons, uncertainty='Day-clustered conditional on one trained autoencoder; three predictor seeds reported separately.'))
-    with (output / 'quality_cost.csv').open('w', newline='') as stream:
-        writer = csv.DictWriter(stream, fieldnames=list(primary_scores[0]))
-        writer.writeheader()
-        writer.writerows(primary_scores)
-    with (output / 'horizons.csv').open('w', newline='') as stream:
-        writer = csv.DictWriter(stream, fieldnames=list(summaries[0]))
-        writer.writeheader()
-        writer.writerows(summaries)
-    failures = defaultdict(list)
-    for row in rows:
-        failures[(row['method'], row['split'], row['window_id'])].append(row['lpips'])
-    with (output / 'failure_review.csv').open('w', newline='') as stream:
-        writer = csv.writer(stream)
-        writer.writerow(['method', 'split', 'window_id', 'mean_lpips', 'disappearance', 'immobility', 'background_smoke', 'temporal_drift', 'reviewer', 'notes'])
-        for key, values in sorted(failures.items(), key=lambda kv: -np.mean(kv[1])):
-            writer.writerow([*key, float(np.mean(values)), '', '', '', '', '', ''])
+    return primary_scores
+
+
+def _write_analysis_plots(output, summaries, primary_scores, horizon):
+    """Render the same horizon and quality/cost figures in a headless process."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -214,6 +217,38 @@ def summarize(inputs, output, cfg):
     fig.tight_layout()
     fig.savefig(output / 'quality_cost.png', dpi=160)
     plt.close(fig)
+
+
+def summarize(inputs, output, cfg):
+    """Aggregate validated evaluations without changing exported schemas."""
+    import numpy as np
+
+    _, horizon = forecast_task(cfg)
+    rows, runtimes = _read_evaluation_rows(inputs, cfg, horizon)
+    summaries = _horizon_summaries(rows)
+    comparisons = _paired_comparisons(rows, cfg)
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    complete_campaign = all({r['seed'] for r in rows if r['method'] == method and r['split'] == split} == set(cfg['seeds']) for method in METHODS for split in ('test_dates', 'test_views'))
+    primary_scores = _quality_cost_scores(rows, runtimes, horizon)
+    write_json(output / 'summary.json', dict(status='complete_campaign' if complete_campaign else 'partial_campaign', primary_scores=primary_scores, summaries=summaries, comparisons=comparisons, uncertainty='Day-clustered conditional on one trained autoencoder; three predictor seeds reported separately.'))
+    with (output / 'quality_cost.csv').open('w', newline='') as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(primary_scores[0]))
+        writer.writeheader()
+        writer.writerows(primary_scores)
+    with (output / 'horizons.csv').open('w', newline='') as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(summaries[0]))
+        writer.writeheader()
+        writer.writerows(summaries)
+    failures = defaultdict(list)
+    for row in rows:
+        failures[(row['method'], row['split'], row['window_id'])].append(row['lpips'])
+    with (output / 'failure_review.csv').open('w', newline='') as stream:
+        writer = csv.writer(stream)
+        writer.writerow(['method', 'split', 'window_id', 'mean_lpips', 'disappearance', 'immobility', 'background_smoke', 'temporal_drift', 'reviewer', 'notes'])
+        for key, values in sorted(failures.items(), key=lambda kv: -np.mean(kv[1])):
+            writer.writerow([*key, float(np.mean(values)), '', '', '', '', '', ''])
+    _write_analysis_plots(output, summaries, primary_scores, horizon)
     return dict(output=str(output), rows=len(rows), comparisons=comparisons, complete_campaign=complete_campaign)
 
 
@@ -228,7 +263,8 @@ def add_monitoring_arguments(command):
     command.add_argument('--wandb-media-every', type=int, default=250)
 
 
-def main(argv=None):
+def _build_parser():
+    """Declare the CLI once; parsing remains separate from execution."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--protocol', default='configs/scientific_protocol.yaml')
     parser.add_argument('--context-frames', type=int, help='Explicit observation count, distinct from the 36-frame training clip')
@@ -248,7 +284,7 @@ def main(argv=None):
     prep.add_argument('--batch-frames', type=int, default=1, help='CLIPSeg frames per batch; default 1, fastest measured on RTX 5060')
     prep.add_argument('--resume', action='store_true', help='Continue an interrupted preparation with matching source videos and settings')
     pipeline = commands.add_parser('pipeline', help='Prepare, validate, train, evaluate and summarize sequentially')
-    pipeline.add_argument('--videos', required=True)
+    pipeline.add_argument('--videos', default='smoke_videos', help='Source MP4 directory; only needed when --data has no completed dataset manifest')
     pipeline.add_argument('--data', required=True)
     pipeline.add_argument('--campaign', required=True)
     pipeline.add_argument('--cache-dir')
@@ -261,6 +297,11 @@ def main(argv=None):
     add_monitoring_arguments(pipeline)
     check = commands.add_parser('check-data')
     check.add_argument('--data', required=True)
+    inspection = commands.add_parser('inspect-autoencoder', help='Diagnose fixed train/validation panels without training or test-set evaluation')
+    inspection.add_argument('--campaign', required=True)
+    inspection.add_argument('--data', required=True)
+    inspection.add_argument('--checkpoint', help='Defaults to the campaign autoencoder/best.pth')
+    inspection.add_argument('--output', help='New output directory for inspection artifacts')
     summary = commands.add_parser('summarize')
     summary.add_argument('--inputs', nargs='+', required=True)
     summary.add_argument('--output', required=True)
@@ -281,6 +322,76 @@ def main(argv=None):
             command.add_argument('--checkpoint')
             command.add_argument('--split', choices=('test_dates', 'test_views'), required=True)
             command.add_argument('--retry-incomplete', action='store_true', help='Archive the failed attempt and regenerate the same frozen panel with the same frozen predictions')
+    return parser
+
+
+def _run_training_command(cfg, args, parser, campaign, device, runner):
+    """Resolve checkpoint recovery and optional tracking before training."""
+    directory = campaign / ('autoencoder' if args.command == 'autoencoder' else f'{args.method}_{args.seed}')
+    if args.resume == 'latest':
+        candidates = [(int(match[1]), path) for path in (directory / 'checkpoints').glob('step_*.pth') if (match := re.fullmatch(r'step_(\d+)\.pth', path.name))]
+        if not candidates:
+            parser.error(f'No checkpoint to resume in {directory / "checkpoints"}')
+        args.resume = str(max(candidates)[1])
+    if (directory / 'run.json').exists() and not args.resume:
+        parser.error('Existing training run: add --resume latest to continue it')
+    tracking = nullcontext(None)
+    if args.wandb:
+        from scientific.monitoring import WandbMonitor, WandbOptions
+        options = WandbOptions(project=args.wandb_project, entity=args.wandb_entity, name=args.wandb_name, group=args.wandb_group,
+            mode=args.wandb_mode, log_every=args.wandb_log_every, media_every=args.wandb_media_every)
+        tracking = WandbMonitor(directory, cfg, 'vqgan' if args.command == 'autoencoder' else args.method,
+            cfg['training']['autoencoder_seed'] if args.command == 'autoencoder' else args.seed, options, resume=bool(args.resume))
+    with tracking as monitor:
+        kwargs = {'monitor': monitor} if monitor is not None else {}
+        if args.command == 'autoencoder':
+            result = runner.train_autoencoder(cfg, args.data, directory, device, args.resume, **kwargs)
+        else:
+            result = runner.train_predictor(cfg, args.data, args.method, args.seed, args.autoencoder, args.pilot, directory, device, args.resume, **kwargs)
+    return result
+
+
+def _run_gpu_command(cfg, args, parser):
+    """Validate GPU inputs and hold the campaign lock through execution."""
+    import torch
+    from scientific import runner
+    if not torch.cuda.is_available():
+        raise RuntimeError('A working CUDA GPU is required; no CPU run is promoted to a GPU campaign')
+    device = torch.device('cuda:0')
+    campaign = Path(args.campaign)
+    if args.command in ('train', 'evaluate') and args.method.startswith('flow') and not args.autoencoder:
+        parser.error('--autoencoder is required for Flow Matching')
+    if args.command == 'evaluate' and args.method in LEARNED and not args.checkpoint:
+        parser.error('--checkpoint is required for a learned predictor')
+    if args.command != 'pilot':
+        check_data(args.data, cfg)
+    campaign.mkdir(parents=True, exist_ok=True)
+    with (campaign / 'campaign.lock').open('a+') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError('Another command is already running in this campaign') from exc
+        if args.command in ('autoencoder', 'train'):
+            result = _run_training_command(cfg, args, parser, campaign, device, runner)
+        elif args.command == 'pilot':
+            result = runner.profile(cfg, campaign / 'pilot.json', device)
+        else:
+            destination = campaign / 'evaluation' / f'{args.method}_{args.seed}_{args.split}'
+            if args.retry_incomplete:
+                import time
+                previous = json.loads((destination / 'evaluation.json').read_text())
+                if previous['status'] != 'incomplete' or (previous['method'], previous['seed'], previous['split'], previous['protocol_sha256']) != (args.method, args.seed, args.split, digest(cfg)):
+                    raise ValueError('Only an incomplete evaluation with matching identity can be retried')
+                archived = campaign / 'evaluation_incomplete' / f'{destination.name}_{time.time_ns()}'
+                archived.parent.mkdir(parents=True, exist_ok=True)
+                destination.rename(archived)
+            rows = runner.evaluate(cfg, args.data, args.method, args.seed, args.checkpoint, args.autoencoder, args.split, destination, device)
+            result = dict(metric_rows=len(rows))
+    return result
+
+
+def main(argv=None):
+    parser = _build_parser()
     args = parser.parse_args(argv)
     cfg = load_protocol(args.protocol)
     if args.context_frames is not None:
@@ -306,63 +417,17 @@ def main(argv=None):
         result = run_pipeline(cfg, args)
     elif args.command == 'check-data':
         result = check_data(args.data, cfg)
-    elif args.command == 'summarize':
-        result = summarize(args.inputs, args.output, cfg)
-    else:
+    elif args.command == 'inspect-autoencoder':
         import torch
         from scientific import runner
         if not torch.cuda.is_available():
-            raise RuntimeError('A working CUDA GPU is required; no CPU run is promoted to a GPU campaign')
-        device = torch.device('cuda:0')
-        campaign = Path(args.campaign)
-        if args.command in ('train', 'evaluate') and args.method.startswith('flow') and not args.autoencoder:
-            parser.error('--autoencoder is required for Flow Matching')
-        if args.command == 'evaluate' and args.method in LEARNED and not args.checkpoint:
-            parser.error('--checkpoint is required for a learned predictor')
-        if args.command != 'pilot':
-            check_data(args.data, cfg)
-        campaign.mkdir(parents=True, exist_ok=True)
-        with (campaign / 'campaign.lock').open('a+') as lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                raise RuntimeError('Another command is already running in this campaign') from exc
-            if args.command in ('autoencoder', 'train'):
-                directory = campaign / ('autoencoder' if args.command == 'autoencoder' else f'{args.method}_{args.seed}')
-                if args.resume == 'latest':
-                    candidates = [(int(match[1]), path) for path in (directory / 'checkpoints').glob('step_*.pth') if (match := re.fullmatch(r'step_(\d+)\.pth', path.name))]
-                    if not candidates:
-                        parser.error(f'No checkpoint to resume in {directory / "checkpoints"}')
-                    args.resume = str(max(candidates)[1])
-                if (directory / 'run.json').exists() and not args.resume:
-                    parser.error('Existing training run: add --resume latest to continue it')
-                tracking = nullcontext(None)
-                if args.wandb:
-                    from scientific.monitoring import WandbMonitor, WandbOptions
-                    options = WandbOptions(project=args.wandb_project, entity=args.wandb_entity, name=args.wandb_name, group=args.wandb_group,
-                        mode=args.wandb_mode, log_every=args.wandb_log_every, media_every=args.wandb_media_every)
-                    tracking = WandbMonitor(directory, cfg, 'vqgan' if args.command == 'autoencoder' else args.method,
-                        cfg['training']['autoencoder_seed'] if args.command == 'autoencoder' else args.seed, options, resume=bool(args.resume))
-                with tracking as monitor:
-                    kwargs = {'monitor': monitor} if monitor is not None else {}
-                    if args.command == 'autoencoder':
-                        result = runner.train_autoencoder(cfg, args.data, directory, device, args.resume, **kwargs)
-                    else:
-                        result = runner.train_predictor(cfg, args.data, args.method, args.seed, args.autoencoder, args.pilot, directory, device, args.resume, **kwargs)
-            elif args.command == 'pilot':
-                result = runner.profile(cfg, campaign / 'pilot.json', device)
-            else:
-                destination = campaign / 'evaluation' / f'{args.method}_{args.seed}_{args.split}'
-                if args.retry_incomplete:
-                    import time
-                    previous = json.loads((destination / 'evaluation.json').read_text())
-                    if previous['status'] != 'incomplete' or (previous['method'], previous['seed'], previous['split'], previous['protocol_sha256']) != (args.method, args.seed, args.split, digest(cfg)):
-                        raise ValueError('Only an incomplete evaluation with matching identity can be retried')
-                    archived = campaign / 'evaluation_incomplete' / f'{destination.name}_{time.time_ns()}'
-                    archived.parent.mkdir(parents=True, exist_ok=True)
-                    destination.rename(archived)
-                rows = runner.evaluate(cfg, args.data, args.method, args.seed, args.checkpoint, args.autoencoder, args.split, destination, device)
-                result = dict(metric_rows=len(rows))
+            raise RuntimeError('A working CUDA GPU is required for checkpoint inspection')
+        result = runner.inspect_autoencoder(cfg, args.data, args.campaign,
+            args.checkpoint or Path(args.campaign) / 'autoencoder/best.pth', torch.device('cuda:0'), args.output)
+    elif args.command == 'summarize':
+        result = summarize(args.inputs, args.output, cfg)
+    else:
+        result = _run_gpu_command(cfg, args, parser)
     if result is not None:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0

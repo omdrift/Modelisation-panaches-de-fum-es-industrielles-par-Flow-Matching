@@ -33,6 +33,21 @@ training:
   background_weight: 1.0
   autoencoder_seed: 42
   discriminator_start: 1000
+  # Exploratory VQGAN recipe: explicit, not yet selected by a smoke calibration.
+  # Common learning_rate/weight_decay/warmup/validation_every above apply to predictors.
+  autoencoder:
+    learning_rate: 0.0002
+    discriminator_learning_rate: 0.0002
+    weight_decay: 0.000001
+    betas: [0.9, 0.999]
+    epsilon: 0.00000001
+    schedule: constant
+    validation_every: 250
+    gradient_clip_norm: 1.0
+    reconstruction_weight: 1.0
+    perceptual_weight: 1.0
+    quantization_weight: 1.0
+    adversarial_weight: 0.1
 model:
   sigma: 0.001
   min_target_index: 2

@@ -29,6 +29,36 @@ def file_hash(path) -> str:
     return h.hexdigest()
 
 
+def _source_manifest(root=Path('.')) -> dict[str, str]:
+    """Hash execution sources consistently for runs, pipelines and study plans."""
+    root = Path(root)
+    return {
+        str(path.relative_to(root)): file_hash(path)
+        for folder in ('scientific', 'model', 'training', 'lutils')
+        for path in sorted((root / folder).rglob('*.py'))
+    }
+
+
+def sources_compatible(previous, current, campaign=None, protocol_sha256=None) -> bool:
+    """Accept identical code or one explicitly recorded campaign maintenance patch.
+
+    A receipt binds the full before/after file manifests and the frozen protocol.
+    It never relaxes data, model, seed, optimizer or runtime checks.
+    """
+    if previous == current:
+        return True
+    if campaign is None:
+        return False
+    path = Path(campaign) / 'maintenance.json'
+    if not path.is_file():
+        return False
+    receipt = json.loads(path.read_text())
+    return (receipt.get('kind') in ('checkpoint_io_and_resume_checks', 'observational_monitoring_and_checkpoint_io')
+            and receipt.get('protocol_sha256') == protocol_sha256
+            and any(digest(sources) == previous for sources in [receipt.get('before_sources', {}), *receipt.get('intermediate_sources', [])])
+            and digest(receipt.get('after_sources', {})) == current)
+
+
 def write_json(path, value) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -54,6 +84,8 @@ def load_protocol(path='configs/scientific_protocol.yaml') -> dict:
         raise ValueError('Protocol v1.1 preserves complete 36-frame clips at the current 64x64 resolution')
     from scientific.segmentation import validate_settings
     validate_settings(cfg['preprocessing'])
+    from scientific.hyperparameters import autoencoder_settings
+    autoencoder_settings(cfg)
     if cfg['seeds'] != [17, 42, 2026]:
         raise ValueError('Protocol v1 fixes the predictor seeds')
     if cfg['evaluation']['realizations'] != 4 or cfg['evaluation']['ode_grid_points'] < 2:

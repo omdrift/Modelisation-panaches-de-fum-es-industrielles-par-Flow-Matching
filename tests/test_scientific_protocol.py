@@ -248,7 +248,8 @@ def test_prepare_load_and_evaluate_pipeline_on_synthetic_mp4(tmp_path, monkeypat
         assert pack['raw_frames'][35, 32, 47, 0] > 100
 
 
-def test_predictor_resume_completes_pending_final_validation(tmp_path, monkeypatch):
+@pytest.mark.parametrize('failure', ['validation', 'best_copy'])
+def test_predictor_resume_completes_pending_final_validation(tmp_path, monkeypatch, failure):
     from scientific import runner
     from scientific.protocol import digest, write_json
     cfg = configured_protocol()
@@ -281,15 +282,23 @@ def test_predictor_resume_completes_pending_final_validation(tmp_path, monkeypat
     monkeypatch.setattr(runner, 'build_lpips', lambda device: TinyMetric())
     monkeypatch.setattr(runner, 'provenance', lambda cfg, root=None: dict(protocol_sha256=digest(cfg), source_sha256='source', gpu=None, torch='test', cuda=None))
     original_validation = runner.validation_score
-    monkeypatch.setattr(runner, 'validation_score', lambda *a, **kw: (_ for _ in ()).throw(RuntimeError('validation interrupted')))
+    original_copy = runner.copy_checkpoint
+    from training.checkpoints import CheckpointWriteError
+    if failure == 'validation':
+        monkeypatch.setattr(runner, 'validation_score', lambda *a, **kw: (_ for _ in ()).throw(RuntimeError('validation interrupted')))
+    else:
+        monkeypatch.setattr(runner, 'copy_checkpoint', lambda *a: (_ for _ in ()).throw(CheckpointWriteError('best copy interrupted')))
     run = tmp_path / 'run'
-    with pytest.raises(RuntimeError, match='validation interrupted'):
+    with pytest.raises(RuntimeError if failure == 'validation' else CheckpointWriteError, match='interrupted'):
         runner.train_predictor(cfg, root, 'simvp', 17, None, pilot, run, torch.device('cpu'))
     assert json.loads((run / 'run.json').read_text())['status'] == 'incomplete'
     checkpoint = run / 'checkpoints/step_1.pth'
     state = torch.load(checkpoint, weights_only=True)
-    assert state['step'] == 1 and state['extra']['last_validated_step'] == 0
+    assert state['step'] == 1
+    assert state['extra']['last_validated_step'] == (0 if failure == 'validation' else 1)
+    assert bool(state['extra'].get('best_checkpoint_pending')) == (failure == 'best_copy')
     monkeypatch.setattr(runner, 'validation_score', original_validation)
+    monkeypatch.setattr(runner, 'copy_checkpoint', original_copy)
     runner.train_predictor(cfg, root, 'simvp', 17, None, pilot, run, torch.device('cpu'), resume=checkpoint)
     assert json.loads((run / 'run.json').read_text())['status'] == 'complete'
     selected = torch.load(run / 'best.pth', weights_only=True)
@@ -400,9 +409,8 @@ def test_complete_clips_do_not_impose_an_inference_horizon():
     cfg = load_protocol()
     assert cfg['task']['clip_frames'] == 36
     assert cfg['model']['min_target_index'] == 2
-    assert forecast_task(cfg, required=False) is None
-    with pytest.raises(ValueError, match='explicitly'):
-        forecast_task(cfg)
+    assert forecast_task(cfg, required=False) == (5, 15)
+    assert forecast_task(cfg) == (5, 15)
     configured = configured_protocol(context=5, horizon=25)
     assert forecast_task(configured) == (5, 25)
     assert digest(data_spec(cfg)) == digest(data_spec(configured))

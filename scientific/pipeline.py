@@ -17,7 +17,7 @@ import time
 
 import yaml
 
-from scientific.protocol import digest, file_hash, LEARNED, write_json, validate_prepared_data
+from scientific.protocol import digest, file_hash, LEARNED, write_json, validate_prepared_data, sources_compatible, _source_manifest
 
 
 @dataclass(frozen=True)
@@ -29,9 +29,7 @@ class Stage:
 
 
 def source_fingerprint() -> str:
-    sources = {str(p): file_hash(p) for folder in ('scientific', 'model', 'training', 'lutils')
-               for p in sorted(Path(folder).rglob('*.py'))}
-    return digest(sources)
+    return digest(_source_manifest())
 
 
 def build_stages(cfg: dict, args, protocol: Path) -> list[Stage]:
@@ -174,24 +172,29 @@ def run_pipeline(cfg: dict, args, *, executor=execute_process) -> dict:
     stages = build_stages(cfg, args, frozen)
     if args.dry_run:
         for i, stage in enumerate(stages, 1):
-            print(f'{i:02d}. {stage.name}: {shlex.join(stage.command)}')
+            if stage.name == 'prepare' and (data / 'dataset_manifest.json').is_file():
+                print(f'{i:02d}. prepare: reuse prepared dataset at {data}; check_data still verifies the NPZ files')
+            else:
+                print(f'{i:02d}. {stage.name}: {shlex.join(stage.command)}')
         print('protocol.yaml will contain the resolved configuration when execution starts.')
         return dict(stages=len(stages), context_frames=cfg['evaluation']['context_frames'], horizon=cfg['evaluation']['horizon'])
-    if not Path(args.videos).is_dir():
-        raise FileNotFoundError(f'Source video directory does not exist: {args.videos}')
+    manifest = data / 'dataset_manifest.json'
+    if manifest.is_file():
+        # Preparation is already complete. Source MP4s and CLIPSeg weights are
+        # no longer inputs to training; check_data still verifies every NPZ.
+        validate_prepared_data(json.loads(manifest.read_text()), cfg)
+    elif not Path(args.videos).is_dir():
+        raise FileNotFoundError(f'No completed dataset manifest at {manifest}; source videos are required to prepare data: {args.videos}')
     campaign.mkdir(parents=True, exist_ok=True)
-    with (campaign / 'campaign.lock').open('a+') as lock:
+    with (campaign / 'pipeline.lock').open('a+') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise RuntimeError('Another command is already running in this campaign') from exc
-        # Child commands inherit ownership through a validated descriptor instead
-        # of competing with their parent for the campaign lock.
-        os.set_inheritable(lock.fileno(), True)
-        return _run_locked(cfg, args, stages, frozen, executor, lock.fileno())
+        return _run_locked(cfg, args, stages, frozen, executor)
 
 
-def _run_locked(cfg, args, stages, frozen, executor, lock_fd):
+def _run_locked(cfg, args, stages, frozen, executor):
     campaign = Path(args.campaign)
     state_path = campaign / 'pipeline.json'
     identity = dict(protocol_sha256=digest(cfg), source_sha256=source_fingerprint(),
@@ -201,7 +204,14 @@ def _run_locked(cfg, args, stages, frozen, executor, lock_fd):
         if not args.resume:
             raise FileExistsError('Campaign already exists; add --resume to verify and continue it')
         state = json.loads(state_path.read_text())
-        if state['identity'] != identity:
+        previous = dict(state['identity'])
+        if sources_compatible(previous.get('source_sha256'), identity['source_sha256'], campaign, identity['protocol_sha256']):
+            previous['source_sha256'] = identity['source_sha256']
+        if (Path(args.data) / 'dataset_manifest.json').is_file():
+            # Preserve the recorded video origin, but it is no longer a runtime
+            # input once preparation is finalized. Data/artifact checks remain.
+            previous['videos'] = identity['videos']
+        if previous != identity:
             raise ValueError('Pipeline resume requires identical sources, data paths, methods, seeds and protocol')
         if not frozen.is_file() or yaml.safe_load(frozen.read_text()) != cfg:
             raise ValueError('Frozen campaign protocol was changed')
@@ -220,8 +230,7 @@ def _run_locked(cfg, args, stages, frozen, executor, lock_fd):
         tracking = WandbMonitor(campaign / 'pipeline_monitor', cfg, 'pipeline', cfg['selection_seed'],
             WandbOptions(project=args.wandb_project, entity=args.wandb_entity, name=args.wandb_name or f'{campaign.name}-pipeline',
                          group=args.wandb_group or campaign.name, mode=args.wandb_mode), resume=args.resume)
-    # Keep subprocess arguments free of shell expansion and hold the same flock
-    # through inherited descriptors in the child CLI.
+    # The supervisor holds pipeline.lock; children hold campaign.lock separately.
     with tracking as monitor:
         for index, stage in enumerate(stages, 1):
             saved = state['stages'].get(stage.name, {})
@@ -239,7 +248,8 @@ def _run_locked(cfg, args, stages, frozen, executor, lock_fd):
             state.update(status='running', current_stage=stage.name)
             state['stages'][stage.name] = dict(status='running', command=list(command))
             write_json(state_path, state)
-            print(f'[{index}/{len(stages)}] {stage.name}', flush=True)
+            note = ': prepared data reused; source videos not required' if reused_data else ''
+            print(f'[{index}/{len(stages)}] {stage.name}{note}', flush=True)
 
             def heartbeat():
                 if monitor is not None:
@@ -255,7 +265,7 @@ def _run_locked(cfg, args, stages, frozen, executor, lock_fd):
                 heartbeat()
                 if not reused_data:
                     if executor is execute_process:
-                        execute_process_in_campaign(command, campaign / 'logs' / f'{stage.name}.log', heartbeat, lock_fd)
+                        execute_process(command, campaign / 'logs' / f'{stage.name}.log', heartbeat)
                     else:
                         executor(command, campaign / 'logs' / f'{stage.name}.log', heartbeat)
                 validate_stage(stage, cfg)
@@ -272,10 +282,3 @@ def _run_locked(cfg, args, stages, frozen, executor, lock_fd):
         state.pop('error', None)
         write_json(state_path, state)
     return dict(status='complete', campaign=str(campaign), summary=str(campaign / 'summary/summary.json'))
-
-
-def execute_process_in_campaign(command, log, heartbeat, lock_fd):
-    """Provide the held lock only to this child, without altering the caller's env."""
-    # Pass the lock through a small explicit environment overlay; execute_process
-    # accepts these only as private call settings.
-    execute_process(command, log, heartbeat, campaign_lock_fd=lock_fd)

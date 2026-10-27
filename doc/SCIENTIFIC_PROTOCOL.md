@@ -1,4 +1,4 @@
-# Protocole scientifique : prédiction visuelle des panaches de fumée
+# Industrial Plume Forecasting — protocole expérimental
 
 La configuration de référence est `configs/scientific_protocol.yaml`. Fixer les données, le scénario, les hyperparamètres et les règles de sélection avant la campagne. Les résultats, y compris une absence d'amélioration, doivent rester traçables à leurs artefacts.
 
@@ -7,7 +7,7 @@ La configuration de référence est `configs/scientific_protocol.yaml`. Fixer le
 1. Quel compromis entre qualité prédictive et coût de calcul offre le Flow Matching face à des références déterministes et apprises ?
 2. Une pondération explicite des régions de fumée améliore-t-elle les prédictions ?
 
-La tâche porte sur des images RGB de fumée isolée en deux dimensions. Elle ne valide pas une mesure de concentration, d'émissions ou de dynamique physique. Chaque clip conserve **36 acquisitions consécutives** en 64×64. Le nombre d'observations `C` et l'horizon `H` sont des paramètres explicites : `C≥2`, `H≥1`, `C+H≤36`. Choisir et déclarer le scénario avant l'apprentissage.
+La tâche porte sur des images RGB de fumée isolée en deux dimensions. Elle ne valide pas une mesure de concentration, d'émissions ou de dynamique physique. Chaque clip conserve **36 acquisitions consécutives** en 64×64. La configuration de référence fixe **`C=5` observations et `H=15` images futures** ; le code accepte d'autres valeurs valides seulement pour une campagne explicitement distincte (`C≥2`, `H≥1`, `C+H≤36`).
 
 Les travaux cités et leurs limites sont présentés dans [SCIENTIFIC_LITERATURE.md](SCIENTIFIC_LITERATURE.md), avec les entrées [BibTeX](references.bib).
 
@@ -94,7 +94,9 @@ La spécification de préparation est indépendante de `C/H` et des paramètres 
 
 Le VQGAN transforme les RGB 64×64×3 en latents 8×8×256. Son codebook contient 1 024 vecteurs, avec coefficient d'engagement 0,1 et canaux intermédiaires 128. Les paramètres déclarés dans le YAML définissent les fabriques. GroupNorm utilise le plus grand diviseur commun de 32 et du nombre de canaux.
 
-Graine 42. Perte composée de MSE de reconstruction, LPIPS officiel AlexNet v0.1, perte VQ et terme adversarial hinge, de poids 1, 1, 1 et 0,1. Activer le discriminateur à la mise à jour 1 000. Deux optimiseurs AdamW à 2e-4 ; seize images par mise à jour par accumulation, choisies avec un calendrier déterministe.
+Graine 42. Recette exploratoire déclarée dans `training.autoencoder` : MSE de reconstruction, LPIPS officiel AlexNet v0.1, perte VQ et terme adversarial hinge, de poids 1, 1, 1 et 0,1. Activer le discriminateur après la mise à jour 1 000. Deux optimiseurs AdamW à 2e-4 constants, betas 0,9/0,999, epsilon 1e-8, décroissance 1e-6 ; seize images par mise à jour par accumulation, choisies avec un calendrier déterministe. Validation toutes les 250 mises à jour et à la fin, écrêtage de norme à 1. Ces choix ne reproduisent pas exactement l'optimiseur et la perte adaptative du VQGAN CompVis.
+
+Les origines des paramètres, leurs limites et une comparaison préenregistrée des LR sont détaillées dans [TRAINING_DESIGN.md](TRAINING_DESIGN.md). Le protocole de référence n'atteste pas leur optimalité. Séparer la calibration sur apprentissage/validation de la campagne confirmatoire ; figer les décisions avant toute consultation des tests. Chaque run exporte ses réglages effectifs dans `effective_training.json`.
 
 Sélectionner le checkpoint par LPIPS de validation, puis geler le VQGAN commun à tous les prédicteurs latents. La variabilité de cet autoencodeur n'est pas répétée et doit être déclarée comme limite.
 
@@ -114,9 +116,17 @@ L'adaptation compacte utilise 32 canaux spatiaux, 128 temporels, profondeur spat
 
 ### Plan commun
 
-Trois graines pour chaque prédicteur : **17, 42, 2026**. Lot effectif seize par accumulation. AdamW, taux 1e-4, décroissance 5e-6 et échauffement 1 000 mises à jour. `training.max_updates` fixe le nombre commun, actuellement 100 000. Sélection uniquement sur la validation.
+Trois graines pour chaque prédicteur : **17, 42, 2026**. Lot effectif seize par accumulation. AdamW, taux 1e-4, décroissance 5e-6 et échauffement linéaire 1 000 mises à jour, puis LR constant. Les paramètres communs ne s'appliquent pas au VQGAN. `training.max_updates` fixe le nombre commun, actuellement 100 000 ; cette limite d'exposition ne démontre pas une convergence. Sélection uniquement sur la validation.
 
 Le pilote synthétique mesure mémoire et débit pour choisir un micro-lot parmi 4, 2 et 1. Il conserve le nombre configuré de mises à jour. Ses résultats ne sont pas des mesures de qualité prédictive. Les checkpoints conservent poids, optimiseurs, scheduler, RNG et provenance. La reprise exige les mêmes sources, données, configuration et artefacts. Documenter les entraînements incomplets.
+
+### Diagnostics de généralisation
+
+À chaque validation, comparer le LPIPS avec un panel fixe d'apprentissage en mode évaluation : jusqu'à 60 clips pour le VQGAN et 8 pour les prédicteurs. Le nombre d'images, les identifiants et les indices sont exportés. Consigner l'écart train/validation, MSE fumée/fond, référence triviale noire ou par persistance, résultats par date et vue, et utilisation du codebook globale et dans les régions de fumée. Les pseudo-masques ne constituent pas une vérité terrain indépendante.
+
+Les diagnostics préservent les états aléatoires, les modes des modules et les paramètres. Le choix des images de validation, les tirages de génération et la moyenne LPIPS utilisés pour sélectionner le checkpoint restent identiques. Les diagnostics complémentaires ne deviennent pas un nouveau critère de sélection après observation des résultats.
+
+Un signal descriptif de surapprentissage possible repose sur cinq validations successives : pente négative du LPIPS du panel d'apprentissage, pente positive du LPIPS de validation, et score courant supérieur de plus de 10 % au meilleur score. Ce signal ne déclenche aucun arrêt automatique et n'est pas une preuve statistique. La sélection répétée sur un panel fini peut elle-même introduire un biais ; l'évaluation finale reste réservée aux tests indépendants.
 
 ## 7. Évaluation
 
