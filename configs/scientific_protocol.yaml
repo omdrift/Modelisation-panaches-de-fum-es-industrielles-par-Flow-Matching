@@ -55,11 +55,11 @@ simvp:
   spatial_depth: 4
   temporal_depth: 4
 evaluation:
-  context_frames: null
-  horizon: null
+  context_frames: 5
+  horizon: 15
   primary_metric: lpips_alex_v0.1
   realizations: 4
   ode_grid_points: 17
   warm_start: 0.0
-  report_horizons: []
+  report_horizons: [1, 4, 8, 12, 15]
   bootstrap_replicates: 2000

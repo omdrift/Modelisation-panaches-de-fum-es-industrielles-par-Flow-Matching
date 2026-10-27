@@ -30,6 +30,7 @@ class WandbOptions:
     project: str = 'smoke-science'
     entity: str | None = None
     name: str | None = None
+    group: str | None = None
     mode: str = 'online'
     log_every: int = 25
     media_every: int = 250
@@ -65,7 +66,7 @@ class WandbMonitor:
                 self.run = wandb.init(
                     project=self.options.project, entity=entity, id=run_id,
                     name=self.options.name or f'{self.directory.parent.name}-{self.method}-{self.seed}',
-                    group=self.directory.parent.name, job_type=self.method,
+                    group=self.options.group or self.directory.parent.name, job_type=self.method,
                     mode=self.options.mode, resume='allow' if self.options.mode == 'online' else None,
                     dir=str(session), config={'protocol': self.cfg, 'method': self.method, 'seed': self.seed},
                     save_code=False,

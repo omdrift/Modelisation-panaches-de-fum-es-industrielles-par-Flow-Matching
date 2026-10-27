@@ -217,6 +217,17 @@ def summarize(inputs, output, cfg):
     return dict(output=str(output), rows=len(rows), comparisons=comparisons, complete_campaign=complete_campaign)
 
 
+def add_monitoring_arguments(command):
+    command.add_argument('--wandb', action='store_true', help='Enable WandB monitoring')
+    command.add_argument('--wandb-project', default='smoke-science')
+    command.add_argument('--wandb-entity')
+    command.add_argument('--wandb-name')
+    command.add_argument('--wandb-group')
+    command.add_argument('--wandb-mode', choices=('online', 'offline'), default='online')
+    command.add_argument('--wandb-log-every', type=int, default=25)
+    command.add_argument('--wandb-media-every', type=int, default=250)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--protocol', default='configs/scientific_protocol.yaml')
@@ -235,6 +246,19 @@ def main(argv=None):
     prep.add_argument('--cache-dir', help='Hugging Face model cache directory')
     prep.add_argument('--local-files-only', action='store_true', help='Use cached pinned model files without network access')
     prep.add_argument('--batch-frames', type=int, default=1, help='CLIPSeg frames per batch; default 1, fastest measured on RTX 5060')
+    prep.add_argument('--resume', action='store_true', help='Continue an interrupted preparation with matching source videos and settings')
+    pipeline = commands.add_parser('pipeline', help='Prepare, validate, train, evaluate and summarize sequentially')
+    pipeline.add_argument('--videos', required=True)
+    pipeline.add_argument('--data', required=True)
+    pipeline.add_argument('--campaign', required=True)
+    pipeline.add_argument('--cache-dir')
+    pipeline.add_argument('--local-files-only', action='store_true')
+    pipeline.add_argument('--batch-frames', type=int, default=1)
+    pipeline.add_argument('--methods', nargs='+', choices=LEARNED, default=list(LEARNED))
+    pipeline.add_argument('--seeds', nargs='+', type=int, choices=(17, 42, 2026), default=[17, 42, 2026])
+    pipeline.add_argument('--resume', action='store_true', help='Reuse verified outputs and continue interrupted stages')
+    pipeline.add_argument('--dry-run', action='store_true', help='Print the ordered commands without creating artifacts or starting jobs')
+    add_monitoring_arguments(pipeline)
     check = commands.add_parser('check-data')
     check.add_argument('--data', required=True)
     summary = commands.add_parser('summarize')
@@ -250,13 +274,7 @@ def main(argv=None):
             command.add_argument('--autoencoder')
         if name in ('train', 'autoencoder'):
             command.add_argument('--resume', help='Checkpoint path, or latest to continue the last saved update')
-            command.add_argument('--wandb', action='store_true', help='Enable WandB training monitoring')
-            command.add_argument('--wandb-project', default='smoke-science')
-            command.add_argument('--wandb-entity')
-            command.add_argument('--wandb-name')
-            command.add_argument('--wandb-mode', choices=('online', 'offline'), default='online')
-            command.add_argument('--wandb-log-every', type=int, default=25)
-            command.add_argument('--wandb-media-every', type=int, default=250)
+            add_monitoring_arguments(command)
         if name == 'train':
             command.add_argument('--pilot', required=True)
         if name == 'evaluate':
@@ -265,10 +283,11 @@ def main(argv=None):
             command.add_argument('--retry-incomplete', action='store_true', help='Archive the failed attempt and regenerate the same frozen panel with the same frozen predictions')
     args = parser.parse_args(argv)
     cfg = load_protocol(args.protocol)
-    if args.context_frames is not None or args.horizon is not None:
+    if args.context_frames is not None:
         cfg['evaluation']['context_frames'] = args.context_frames
+    if args.horizon is not None:
         cfg['evaluation']['horizon'] = args.horizon
-    forecast_task(cfg, required=args.command in ('pilot', 'autoencoder', 'train', 'evaluate', 'summarize'))
+    forecast_task(cfg, required=args.command in ('pipeline', 'pilot', 'autoencoder', 'train', 'evaluate', 'summarize'))
     if args.command == 'doctor':
         result = doctor()
         print(json.dumps(result, indent=2))
@@ -281,7 +300,10 @@ def main(argv=None):
         from scientific.data import prepare
         result = prepare(json.loads(Path(cfg['metadata']).read_text()), Path(args.videos), Path(args.output), cfg,
             metadata_path=Path(cfg['metadata']), device=args.device, cache_dir=args.cache_dir, local_files_only=args.local_files_only,
-            batch_frames=args.batch_frames)
+            batch_frames=args.batch_frames, resume=args.resume)
+    elif args.command == 'pipeline':
+        from scientific.pipeline import run_pipeline
+        result = run_pipeline(cfg, args)
     elif args.command == 'check-data':
         result = check_data(args.data, cfg)
     elif args.command == 'summarize':
@@ -317,7 +339,7 @@ def main(argv=None):
                 tracking = nullcontext(None)
                 if args.wandb:
                     from scientific.monitoring import WandbMonitor, WandbOptions
-                    options = WandbOptions(project=args.wandb_project, entity=args.wandb_entity, name=args.wandb_name,
+                    options = WandbOptions(project=args.wandb_project, entity=args.wandb_entity, name=args.wandb_name, group=args.wandb_group,
                         mode=args.wandb_mode, log_every=args.wandb_log_every, media_every=args.wandb_media_every)
                     tracking = WandbMonitor(directory, cfg, 'vqgan' if args.command == 'autoencoder' else args.method,
                         cfg['training']['autoencoder_seed'] if args.command == 'autoencoder' else args.seed, options, resume=bool(args.resume))

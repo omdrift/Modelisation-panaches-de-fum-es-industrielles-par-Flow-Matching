@@ -29,20 +29,40 @@ def validate_indices(indices, timestamps) -> None:
 
 
 def prepare(metadata: list[dict], video_root: Path, output: Path, cfg: dict, metadata_path: Path | None = None,
-            device='auto', cache_dir=None, local_files_only=False, batch_frames=None) -> dict:
+            device='auto', cache_dir=None, local_files_only=False, batch_frames=None, resume=False) -> dict:
     import cv2
     from tqdm import tqdm
 
-    if output.exists():
+    if output.exists() and not resume:
         raise FileExistsError(f'Refusing to overwrite a prepared dataset: {output}')
+    if (output / 'dataset_manifest.json').exists():
+        raise FileExistsError('Dataset already finalized; use check-data or pipeline --resume to reuse it')
     if metadata_path is not None and json.loads(metadata_path.read_text()) != metadata:
         raise ValueError('Metadata input differs from its declared source file')
     # Load and verify one model before creating any dataset artifacts.
     extractor = ClipSegExtractor(cfg['preprocessing'], device=device, cache_dir=cache_dir, local_files_only=local_files_only, batch_frames=batch_frames)
     extraction_identity = extractor.provenance
-    output.mkdir(parents=True)
-    (output / 'clips').mkdir()
+    identity = dict(data_spec_sha256=digest(data_spec(cfg)), metadata_sha256=digest(metadata), extraction=extraction_identity,
+                    video_root=str(video_root.resolve()))
+    declaration = output / 'preparation.json'
+    journal = output / 'preparation_checkpoints.jsonl'
+    previous = {}
+    if output.exists():
+        if not declaration.is_file() or json.loads(declaration.read_text()) != identity:
+            raise ValueError('Cannot resume preparation with different videos, settings or extraction implementation')
+        if journal.exists():
+            previous = {entry['event']['video_id']: entry for entry in read_jsonl(journal)}
+    else:
+        output.mkdir(parents=True)
+        (output / 'clips').mkdir()
+        write_json(declaration, identity)
     records, events, tasks = [], [], []
+
+    def checkpoint(event, record=None):
+        with journal.open('a') as stream:
+            stream.write(json.dumps(dict(event=event, record=record), allow_nan=False) + '\n')
+        write_json(output / 'progress.json', dict(completed=completed, total=len(tasks), video_id=event['video_id']))
+
     # Account for all metadata, but estimate time only over actual source videos.
     for item in sorted(metadata, key=lambda r: r['id']):
         split = partition(item)
@@ -58,7 +78,21 @@ def prepare(metadata: list[dict], video_root: Path, output: Path, cfg: dict, met
             continue
         tasks.append((item, split, path, event))
     print(f'CLIPSeg: device={extractor.device}, batch_frames={extractor.batch_frames}, source_clips={len(tasks)}', flush=True)
-    for item, split, path, event in tqdm(tasks, desc='Preparing 36-frame clips', unit='clip'):
+    for completed, (item, split, path, event) in enumerate(tqdm(tasks, desc='Preparing 36-frame clips', unit='clip'), 1):
+        source_sha256 = file_hash(path)
+        if item['id'] in previous:
+            saved = previous[item['id']]
+            if saved['event']['source_sha256'] != source_sha256:
+                raise ValueError(f"Source video changed during preparation: {item['id']}")
+            record = saved['record']
+            if record is not None:
+                if file_hash(output / record['path']) != record['sha256']:
+                    raise ValueError(f"Prepared clip checksum changed: {record['window_id']}")
+                records.append(record)
+            events.append(saved['event'])
+            write_json(output / 'progress.json', dict(completed=completed, total=len(tasks), video_id=item['id']))
+            continue
+        event['source_sha256'] = source_sha256
         capture = cv2.VideoCapture(str(path))
         expected_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
         event.update(container_fps=capture.get(cv2.CAP_PROP_FPS), source_width=int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), source_height=int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)))
@@ -73,13 +107,14 @@ def prepare(metadata: list[dict], video_root: Path, output: Path, cfg: dict, met
         if len(decoded) != expected_count or len(decoded) != cfg['task']['clip_frames']:
             event['status'] = 'decode_count_mismatch' if len(decoded) != expected_count else 'unexpected_clip_length'
             events.append(event)
+            checkpoint(event)
             continue
         parts = item['file_name'].split('-')
         start, end = int(parts[-2]), int(parts[-1])
         if end <= start or int(item['start_time']) != start:
             raise ValueError(f"Inconsistent source timestamps for video {item['id']}")
         delta = (end - start) / (len(decoded) - 1)
-        event.update(source_sha256=file_hash(path), source_interval_seconds=delta, unused_tail_frames=0)
+        event.update(source_interval_seconds=delta, unused_tail_frames=0)
         indices = list(range(len(decoded)))
         times = [start + i * delta for i in indices]
         validate_indices(indices, times)
@@ -94,6 +129,7 @@ def prepare(metadata: list[dict], video_root: Path, output: Path, cfg: dict, met
             np.savez_compressed(output / relative, raw_frames=raw)
             event.update(status='segmentation_failed', raw_path=relative, reason=str(exc))
             events.append(event)
+            checkpoint(event)
             continue
         # Segment at native resolution, then reduce RGB×mask and mask separately.
         smoke = np.stack([cv2.resize(frame, (64, 64), interpolation=cv2.INTER_AREA) for frame in smoke])
@@ -104,6 +140,7 @@ def prepare(metadata: list[dict], video_root: Path, output: Path, cfg: dict, met
         records.append(dict(window_id=window_id, video_id=item['id'], split=split, date='-'.join(parts[2:5]), camera_id=item['camera_id'], view_id=item['view_id'], frame_count=len(decoded), frame_indices=indices, timestamps=times, timestamp_basis='linear_source_endpoints_not_playback_fps', path=relative, sha256=file_hash(output / relative), source_sha256=event['source_sha256'], extraction_sha256=digest(extraction_identity), source_resolution=list(source.shape[1:3])))
         event.update(status='prepared', clips=1)
         events.append(event)
+        checkpoint(event, records[-1])
     selection = {}
     for split in ('train', 'val', 'test_dates', 'test_views'):
         subset = [r for r in records if r['split'] == split]
