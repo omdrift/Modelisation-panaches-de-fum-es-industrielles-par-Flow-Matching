@@ -92,7 +92,7 @@ python -m scientific.cli \
   autoencoder --campaign runs_scientific/smoke --data scientific_data/smoke
 ```
 
-The pilot uses synthetic tensors to measure memory and choose micro-batches; it does not estimate predictive quality. `training.max_updates` fixes the number of optimizer updates. Effective batch size is sixteen, implemented through accumulation. VQGAN uses reconstruction, calibrated LPIPS, VQ and adversarial losses, and selects `best.pth` using validation LPIPS.
+The pilot uses synthetic tensors to measure memory and choose micro-batches; it does not estimate predictive quality. `training.max_updates` caps the number of optimizer updates. Effective batch size is sixteen, implemented through accumulation. VQGAN uses reconstruction, calibrated LPIPS, VQ and adversarial losses, and selects `best.pth` using validation LPIPS.
 
 ## Predictor training
 
@@ -109,7 +109,25 @@ for method in simvp flow_uniform flow_alpha; do
 done
 ```
 
-SimVP uses RGB directly; Flow Matching uses the frozen common VQGAN. Checkpoints contain parameters, optimizers, scheduler, random states and provenance. An artifact becomes a completed selected model only after all planned updates and the final validation finish. Commands sharing a campaign directory are protected against concurrent writes.
+SimVP uses RGB directly; Flow Matching uses the frozen common VQGAN. Checkpoints contain parameters, optimizers, scheduler, random states and provenance. A selected model is complete after a validated early-stop decision or the maximum updates and final validation. Commands sharing a campaign directory are protected against concurrent writes.
+
+## Early stopping and existing campaigns
+
+New campaigns declare `training.early_stopping`: enabled, patience ten validations, minimum decrease 0.0001 LPIPS, and a minimum of 5,000 updates before counting patience. Predictor warmup and VQGAN adversarial activation must also have finished. A plateau preserves the raw minimum in `best.pth`, marks the run complete, and lets the pipeline continue. The actual update count and `termination_reason` are recorded; they can differ between models and seeds. Fixed-exposure calibration candidates explicitly disable stopping.
+
+An already running Python process does not reload this code. Frozen protocols without the new section keep their previous behavior. To opt an older campaign in, stop the pipeline with Ctrl+C and wait for the checkpoint and process exit. Then use a source snapshot whose fingerprint matches the campaign:
+
+```bash
+python tools/enable_early_stopping.py \
+  --campaign runs_scientific/smoke \
+  --previous-source-root /path/to/original/source/snapshot
+
+python -m scientific.cli --protocol runs_scientific/smoke/protocol.yaml \
+  pipeline --data scientific_data/smoke --campaign runs_scientific/smoke \
+  --resume --wandb
+```
+
+The upgrade never starts training or rewrites weights. It checks both campaign locks, records the complete before/after protocol and source manifests in `maintenance.json`, and changes only the early-stopping policy. The supervisor's original identity is preserved in the receipt; only its protocol and source fingerprints are updated. Unsupported source changes, another maintenance transition, or test results already present cause rejection. Patience starts on resume, anchored to the saved best score; it does not retrospectively declare an earlier stop. A resumed completed run remains immutable. The transition must be reported as a change during the study, not a preregistered stopping rule. Subsequent resumes use the upgraded frozen protocol.
 
 ## Monitoring and recovery
 
@@ -125,7 +143,7 @@ Each validation also computes diagnostic metrics on a fixed training panel in in
 
 ### Compact workspace
 
-An open interpretation card explains the axes, units, useful signals and limitations. The main VQGAN section contains six line charts: train/validation/best LPIPS, train/validation smoke MSE, train/validation background MSE, LPIPS gap, codebook perplexity, and fraction of codes used. The next section contains fixed reconstruction/error/mask examples. Date/view analysis, optimization/resources, and selection/baseline diagnostics are collapsed. Date and view metrics share two charts instead of producing one panel per group. Predictor layouts omit VQGAN codebook charts.
+An open interpretation card explains the axes, units, useful signals and limitations. The main VQGAN section contains seven line charts: train/validation/best LPIPS, train/validation smoke MSE, train/validation background MSE, LPIPS gap, codebook perplexity, fraction of codes used, and early-stopping patience against its threshold. The next section contains fixed reconstruction/error/mask examples. Date/view analysis, optimization/resources, and selection/baseline diagnostics are collapsed. Date and view metrics share two charts instead of producing one panel per group. Predictor layouts omit VQGAN codebook charts.
 
 All charts use optimizer `global_step` without smoothing. Counters such as valid frames, assignments and window counts remain available in local JSON and recorded W&B data, without automatic panels. Logging hides metrics from automatic plots by default and explicitly exposes a small set of quality signals. The named workspace disables automatic panel creation. Changing logging metadata alone does not reorganize an already saved workspace.
 
@@ -156,6 +174,8 @@ The design uses W&B's documented [metric visibility and custom axes](https://doc
 | `validation/codebook/*`, `validation/smoke_codebook/*` | VQ perplexity, active codes, used fraction and number of assignments |
 | `train/gradient_norm_before_clip` | Gradient norm before the existing clipping operation |
 | `selection/best_step`, `selection/updates_since_best` | Selected validation checkpoint and time since its last improvement |
+| `early_stopping/bad_checks`, `early_stopping/patience` | Completed eligible validations without a significant improvement and the stopping threshold |
+| `early_stopping/stopped` | Persisted plateau decision; separate from the advisory overfitting flag |
 
 `generalization/possible_overfit` is available after five diagnostic validations. It is an advisory flag when the fitted training LPIPS slope is negative, the validation slope is positive, and current validation LPIPS exceeds the best value by more than 10%. This heuristic does not demonstrate overfitting, stop training, reject a checkpoint or change model selection. Train/validation distribution differences and noisy validation scores can produce similar patterns.
 

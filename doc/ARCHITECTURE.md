@@ -57,6 +57,9 @@ flowchart TD
     V --> G[LPIPS de validation pour sélection]
     A --> G
     G --> H[best.pth si amélioration]
+    V --> P[Patience sur LPIPS de validation]
+    P --> R[Checkpoint et fin propre si plateau]
+    R --> S[Étape suivante de la pipeline]
     C --> J[WandB + diagnostics JSON]
     D --> J
     E --> J
@@ -64,6 +67,8 @@ flowchart TD
 ```
 
 Les diagnostics ne modifient ni l'objectif d'entraînement ni le critère de sélection. Les états aléatoires et les modes des modules sont restaurés après l'inférence. Un écart train/validation ou une faible utilisation du codebook constitue un signal à examiner ; aucun de ces indicateurs ne prouve à lui seul un surapprentissage. Les ensembles de test restent réservés à l'évaluation finale.
+
+L'arrêt anticipé est une politique distincte fondée uniquement sur le LPIPS de validation : dix validations sans baisse significative de 0,0001, après 5 000 mises à jour et la phase initiale. Le minimum brut sélectionnant `best.pth` est indépendant de cette référence. Les compteurs sont persistés ; une validation interrompue est rejouée avant la prochaine mise à jour. Une fin anticipée valide conserve `status=complete` et ajoute `termination_reason=early_stopping` ; une interruption reste incomplète.
 
 ## États de campagne
 

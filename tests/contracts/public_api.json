@@ -795,5 +795,51 @@
       "arguments": "model, optimizer, scheduler, checkpoint_path: Path, device: torch.device",
       "returns": "int"
     }
+  },
+  "scientific/early_stopping.py": {
+    "settings": {
+      "arguments": "cfg: dict",
+      "returns": "dict"
+    },
+    "EarlyStopping": {
+      "__init__": {
+        "arguments": "self, cfg: dict, state: dict | None=None",
+        "returns": null
+      },
+      "_restore": {
+        "arguments": "self, state: dict",
+        "returns": "None"
+      },
+      "stopped": {
+        "arguments": "self",
+        "returns": "bool"
+      },
+      "observe": {
+        "arguments": "self, score: float, step: int, *, eligible: bool=True",
+        "returns": "None"
+      },
+      "state_dict": {
+        "arguments": "self",
+        "returns": "dict"
+      },
+      "metrics": {
+        "arguments": "self",
+        "returns": "dict"
+      }
+    },
+    "completion_valid": {
+      "arguments": "cfg: dict, completion: dict",
+      "returns": "bool"
+    }
+  },
+  "tools/enable_early_stopping.py": {
+    "enable": {
+      "arguments": "campaign, previous_source_root, *, source_root=REPOSITORY, **policy",
+      "returns": null
+    },
+    "main": {
+      "arguments": "argv=None",
+      "returns": null
+    }
   }
 }

@@ -116,7 +116,11 @@ L'adaptation compacte utilise 32 canaux spatiaux, 128 temporels, profondeur spat
 
 ### Plan commun
 
-Trois graines pour chaque prédicteur : **17, 42, 2026**. Lot effectif seize par accumulation. AdamW, taux 1e-4, décroissance 5e-6 et échauffement linéaire 1 000 mises à jour, puis LR constant. Les paramètres communs ne s'appliquent pas au VQGAN. `training.max_updates` fixe le nombre commun, actuellement 100 000 ; cette limite d'exposition ne démontre pas une convergence. Sélection uniquement sur la validation.
+Trois graines pour chaque prédicteur : **17, 42, 2026**. Lot effectif seize par accumulation. AdamW, taux 1e-4, décroissance 5e-6 et échauffement linéaire 1 000 mises à jour, puis LR constant. Les paramètres communs ne s'appliquent pas au VQGAN. `training.max_updates` fixe un plafond commun, actuellement 100 000 ; cette limite ne démontre pas une convergence. Sélection et arrêt uniquement sur la validation.
+
+`training.early_stopping` active pour le VQGAN et chaque prédicteur une patience de dix validations sans baisse de LPIPS strictement supérieure à 0,0001. Le compteur reste nul avant 5 000 mises à jour, avant la fin de l'échauffement des prédicteurs et avant l'activation adversariale du VQGAN. La référence d'amélioration significative reste fixe entre deux progrès suffisants : de petits gains cumulés peuvent réinitialiser la patience. Le meilleur checkpoint conserve indépendamment le minimum brut de LPIPS. Les tests ne participent jamais à l'arrêt.
+
+Une fin anticipée réussie reste `status=complete`, avec `termination_reason=early_stopping`, le nombre réel de mises à jour et la décision persistée. La pipeline utilise ensuite `best.pth` et poursuit ses étapes. Même plafond et même politique ne signifient pas une exposition réalisée identique : publier les durées, mises à jour et motifs d'arrêt par méthode et graine. Les calibrations préenregistrées à exposition identique désactivent explicitement l'arrêt anticipé. Les protocoles antérieurs sans politique restent désactivés ; une adoption en cours d'étude doit être déclarée et ne constitue pas une règle préenregistrée rétroactivement.
 
 Le pilote synthétique mesure mémoire et débit pour choisir un micro-lot parmi 4, 2 et 1. Il conserve le nombre configuré de mises à jour. Ses résultats ne sont pas des mesures de qualité prédictive. Les checkpoints conservent poids, optimiseurs, scheduler, RNG et provenance. La reprise exige les mêmes sources, données, configuration et artefacts. Documenter les entraînements incomplets.
 
