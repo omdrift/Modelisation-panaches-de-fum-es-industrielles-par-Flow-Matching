@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from lutils.configuration import Configuration
 from model.layers import ResidualBlock
 from model.vqgan.utils import swish, normalize
 
@@ -56,7 +55,8 @@ class Encoder(nn.Module):
         return x
 
 
-def build_encoder(config: Configuration) -> nn.Module:
+def build_encoder(config: dict) -> nn.Module:
     return Encoder(
         in_channels=config["in_channels"],
-        out_channels=config["out_channels"])
+        out_channels=config["out_channels"],
+        mid_channels=int(config['mid_channels']))

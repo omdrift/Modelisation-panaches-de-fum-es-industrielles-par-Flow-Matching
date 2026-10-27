@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500" role="img" aria-labelledby="title desc">
+  <title id="title">Industrial Plume Forecasting: data, training and held-out evaluation</title>
+  <desc id="desc">Thirty-six RISE frames are segmented independently with CLIPSeg and a spatial guided filter. Prepared RGB, estimated masks and metadata feed a common VQGAN and five comparison methods. Evaluation uses five observed frames to predict fifteen, with future targets reserved for scoring.</desc>
+  <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="#65d7c5"/></marker></defs>
+  <rect width="1200" height="500" rx="20" fill="#0d1b2d"/>
+  <g font-family="system-ui, sans-serif" fill="#f1f6ff">
+    <text x="40" y="48" font-size="26" font-weight="700">Industrial Plume Forecasting</text>
+    <text x="40" y="76" fill="#b9cadd" font-size="16">Implemented workflow · experimental performance remains to be established</text>
+    <g fill="#172c44" stroke="#4e7596" stroke-width="1.5">
+      <rect x="40" y="110" width="300" height="112" rx="12"/>
+      <rect x="450" y="110" width="300" height="112" rx="12"/>
+      <rect x="860" y="110" width="300" height="112" rx="12"/>
+      <rect x="40" y="290" width="300" height="130" rx="12"/>
+      <rect x="450" y="290" width="300" height="130" rx="12"/>
+      <rect x="860" y="290" width="300" height="130" rx="12"/>
+    </g>
+    <g font-size="20" font-weight="650">
+      <text x="62" y="145">RISE video clips</text><text x="472" y="145">Causal extraction</text><text x="882" y="145">Prepared NPZ clips</text>
+      <text x="62" y="325">Common VQGAN</text><text x="472" y="325">Five comparison methods</text><text x="882" y="325">Held-out evaluation</text>
+    </g>
+    <g fill="#c9d8e7" font-size="16">
+      <text x="62" y="178">36 consecutive acquisitions</text><text x="62" y="202">Date + camera + view identifiers</text>
+      <text x="472" y="178">CLIPSeg + spatial guided filter</text><text x="472" y="202">Each frame processed separately</text>
+      <text x="882" y="178">64×64 RGB + estimated alpha</text><text x="882" y="202">Checksums + temporal metadata</text>
+      <text x="62" y="357">8×8×256 latents · 1,024 codes</text><text x="62" y="381">Train / validation only</text><text x="62" y="405">Freeze for both latent predictors</text>
+      <text x="472" y="354">Persistence · optical flow · SimVP</text><text x="472" y="378">Uniform / weighted Flow Matching</text><text x="472" y="402">Three predictor seeds</text>
+      <text x="882" y="354">5 observations → 15 predictions</text><text x="882" y="378">LPIPS + smoke/background errors</text><text x="882" y="402">Known views / unseen views</text>
+    </g>
+    <g stroke="#65d7c5" stroke-width="3" fill="none" marker-end="url(#arrow)">
+      <path d="M340 166H438"/><path d="M750 166H848"/><path d="M1010 222V252H190V278"/>
+      <path d="M340 355H438"/><path d="M750 355H848"/>
+    </g>
+    <text x="40" y="465" fill="#b9cadd" font-size="16">Masks are semantic estimates. Validation selects checkpoints; true future test frames are used only for scoring.</text>
+  </g>
+</svg>

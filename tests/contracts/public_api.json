@@ -1,0 +1,799 @@
+{
+  "scientific/diagnostics.py": {
+    "evaluation_mode": {
+      "arguments": "model",
+      "returns": null
+    },
+    "fixed_indices": {
+      "arguments": "dataset, limit=None, seed=42",
+      "returns": null
+    },
+    "image_errors": {
+      "arguments": "prediction, target, alpha, lpips_values",
+      "returns": null
+    },
+    "codebook_statistics": {
+      "arguments": "counts",
+      "returns": null
+    },
+    "Snapshot": {
+      "score": {
+        "arguments": "self",
+        "returns": null
+      },
+      "add": {
+        "arguments": "self, dataset, index, rank, prediction, target, alpha, perceptual, baseline, frame_indices",
+        "returns": null
+      },
+      "add_codes": {
+        "arguments": "self, codes, alpha",
+        "returns": null
+      },
+      "summary": {
+        "arguments": "self",
+        "returns": null
+      }
+    },
+    "reconstruction_snapshot": {
+      "arguments": "model, dataset, metric, cfg, device, *, train_panel=False",
+      "returns": null
+    },
+    "forecast_snapshot": {
+      "arguments": "model, dataset, metric, cfg, device, predict, *, train_panel=False",
+      "returns": null
+    },
+    "export_snapshot": {
+      "arguments": "run, step, method, training, validation, best, best_step, origin=None",
+      "returns": null
+    },
+    "trend_diagnostics": {
+      "arguments": "run, step, train_lpips, validation_lpips, best",
+      "returns": null
+    },
+    "selection_details": {
+      "arguments": "run, best",
+      "returns": null
+    },
+    "plot_history": {
+      "arguments": "run",
+      "returns": null
+    }
+  },
+  "scientific/hyperparameters.py": {
+    "autoencoder_settings": {
+      "arguments": "cfg: dict",
+      "returns": "dict"
+    },
+    "training_description": {
+      "arguments": "cfg: dict, method: str",
+      "returns": "dict"
+    }
+  },
+  "lutils/__init__.py": {},
+  "lutils/dict_wrapper.py": {
+    "DictWrapper": {
+      "__init__": {
+        "arguments": "self, *args, **kwargs",
+        "returns": null
+      },
+      "__getattr__": {
+        "arguments": "self, attr",
+        "returns": null
+      },
+      "__setattr__": {
+        "arguments": "self, key, value",
+        "returns": null
+      },
+      "__setitem__": {
+        "arguments": "self, key, value",
+        "returns": null
+      },
+      "__delattr__": {
+        "arguments": "self, item",
+        "returns": null
+      },
+      "__delitem__": {
+        "arguments": "self, key",
+        "returns": null
+      }
+    }
+  },
+  "lutils/tensor_folder.py": {
+    "TensorFolder": {
+      "flatten": {
+        "arguments": "tensor: torch.Tensor",
+        "returns": "torch.Tensor"
+      },
+      "flatten_list": {
+        "arguments": "tensors: List[torch.Tensor]",
+        "returns": "List[torch.Tensor]"
+      },
+      "fold": {
+        "arguments": "tensor: torch.Tensor, second_dimension_size: torch.Tensor",
+        "returns": "torch.Tensor"
+      },
+      "fold_list": {
+        "arguments": "tensors: List[torch.Tensor], second_dimension_size: torch.Tensor",
+        "returns": "List[torch.Tensor]"
+      }
+    }
+  },
+  "model/__init__.py": {},
+  "model/autoencoder_adapter.py": {
+    "AutoencoderAdapter": {
+      "__init__": {
+        "arguments": "self, autoencoder",
+        "returns": null
+      },
+      "encode": {
+        "arguments": "self, frames: torch.Tensor",
+        "returns": "torch.Tensor"
+      },
+      "decode": {
+        "arguments": "self, latents: torch.Tensor",
+        "returns": "torch.Tensor"
+      }
+    }
+  },
+  "model/conditioning.py": {
+    "ConditioningIndices": {},
+    "ConditioningSampler": {
+      "sample": {
+        "arguments": "self, batch_size: int, num_observations: int, device: torch.device, min_target_index: int=2",
+        "returns": "ConditioningIndices"
+      }
+    }
+  },
+  "model/flow_matching.py": {
+    "FlowMatchingSample": {},
+    "FlowMatchingObjective": {
+      "__init__": {
+        "arguments": "self, sigma: float, smoke_threshold: float=0.1",
+        "returns": null
+      },
+      "sample": {
+        "arguments": "self, target_latents: torch.Tensor, *, noise: torch.Tensor | None=None, timestamps: torch.Tensor | None=None",
+        "returns": "FlowMatchingSample"
+      }
+    }
+  },
+  "model/layers/__init__.py": {},
+  "model/layers/position_encoding.py": {
+    "PositionEmbeddingSine": {
+      "__init__": {
+        "arguments": "self, num_pos_feats=64, temperature=10000, normalize=False, scale=None",
+        "returns": null
+      },
+      "forward": {
+        "arguments": "self, x: torch.Tensor",
+        "returns": null
+      }
+    },
+    "PositionEmbeddingLearned": {
+      "__init__": {
+        "arguments": "self, num_pos_feats=256",
+        "returns": null
+      },
+      "reset_parameters": {
+        "arguments": "self",
+        "returns": null
+      },
+      "forward": {
+        "arguments": "self, x: torch.Tensor",
+        "returns": null
+      }
+    },
+    "PositionEmbeddingLearnedFlat": {
+      "__init__": {
+        "arguments": "self, num_pos_feats=256",
+        "returns": null
+      },
+      "reset_parameters": {
+        "arguments": "self",
+        "returns": null
+      },
+      "forward": {
+        "arguments": "self, x: torch.Tensor",
+        "returns": null
+      }
+    },
+    "build_position_encoding": {
+      "arguments": "hidden_dim: int, position_embedding_name: str",
+      "returns": null
+    }
+  },
+  "model/layers/residual_block.py": {
+    "conv3x3": {
+      "arguments": "in_planes: int, out_planes: int, stride: int=1",
+      "returns": null
+    },
+    "conv1x1": {
+      "arguments": "in_planes: int, out_planes: int, stride: int=1",
+      "returns": null
+    },
+    "ResidualBlock": {
+      "__init__": {
+        "arguments": "self, in_planes: int, out_planes: int, downsample_factor: int=1, last_affine: bool=True, drop_final_activation: bool=False, norm_layer=nn.BatchNorm2d",
+        "returns": null
+      },
+      "forward": {
+        "arguments": "self, x: torch.Tensor",
+        "returns": "torch.Tensor"
+      }
+    }
+  },
+  "model/layers/up_block.py": {
+    "UpBlock": {
+      "__init__": {
+        "arguments": "self, in_features: int, out_features: int, kernel_size: int=3, padding: int=1, scale_factor: int=2, upscaling_mode: str='nearest', late_upscaling: bool=False",
+        "returns": null
+      },
+      "forward": {
+        "arguments": "self, x: torch.Tensor",
+        "returns": "torch.Tensor"
+      }
+    }
+  },
+  "model/layers/utils.py": {
+    "SequenceConverter": {
+      "__init__": {
+        "arguments": "self, backbone: nn.Module",
+        "returns": null
+      },
+      "convert": {
+        "arguments": "x, n",
+        "returns": null
+      },
+      "forward": {
+        "arguments": "self, *args: torch.Tensor",
+        "returns": "torch.Tensor"
+      }
+    }
+  },
+  "model/model.py": {
+    "Model": {
+      "__init__": {
+        "arguments": "self, config: dict, load_autoencoder: bool=True",
+        "returns": null
+      },
+      "forward": {
+        "arguments": "self, observations: torch.Tensor, observations_are_latents: bool=False, alpha_masks: torch.Tensor | None=None",
+        "returns": "DictWrapper[str, Any]"
+      },
+      "generate_frames": {
+        "arguments": "self, observations: torch.Tensor, num_frames: int=None, steps: int=100, warm_start: float=0.0, past_horizon: int=-1, verbose: bool=False, generator: torch.Generator | None=None",
+        "returns": "torch.Tensor"
+      }
+    }
+  },
+  "model/ode.py": {
+    "odeint": {
+      "arguments": "func, y0: torch.Tensor, t: torch.Tensor, method: str='rk4'",
+      "returns": "torch.Tensor"
+    }
+  },
+  "model/vector_field_regressor.py": {
+    "timestamp_embedding": {
+      "arguments": "timesteps, dim, scale=200, max_period=10000, repeat_only=False",
+      "returns": null
+    },
+    "VectorFieldRegressor": {
+      "__init__": {
+        "arguments": "self, depth: int, mid_depth: int, state_size: int, state_res: Tuple[int, int], inner_dim: int, out_norm: str='ln', reference: bool=True",
+        "returns": null
+      },
+      "forward": {
+        "arguments": "self, input_latents: torch.Tensor, reference_latents: torch.Tensor, conditioning_latents: torch.Tensor, index_distances: torch.Tensor, timestamps: torch.Tensor",
+        "returns": "torch.Tensor"
+      }
+    },
+    "build_vector_field_regressor": {
+      "arguments": "config: dict, reference: bool=True",
+      "returns": null
+    }
+  },
+  "model/vqgan/__init__.py": {},
+  "model/vqgan/decoder.py": {
+    "Decoder": {
+      "__init__": {
+        "arguments": "self, in_channels: int, out_channels: int, mid_channels: int=256",
+        "returns": null
+      },
+      "forward": {
+        "arguments": "self, images: torch.Tensor",
+        "returns": "torch.Tensor"
+      }
+    },
+    "build_decoder": {
+      "arguments": "config: dict",
+      "returns": "nn.Module"
+    }
+  },
+  "model/vqgan/discriminator.py": {
+    "weights_init": {
+      "arguments": "m",
+      "returns": null
+    },
+    "NLayerDiscriminator": {
+      "__init__": {
+        "arguments": "self, input_nc=3, ndf=64, n_layers=3",
+        "returns": null
+      },
+      "forward": {
+        "arguments": "self, input",
+        "returns": null
+      }
+    },
+    "build_discriminator": {
+      "arguments": "input_nc=3, ndf=64, n_layers=3",
+      "returns": null
+    }
+  },
+  "model/vqgan/encoder.py": {
+    "Encoder": {
+      "__init__": {
+        "arguments": "self, in_channels: int, out_channels: int, mid_channels: int=32",
+        "returns": null
+      },
+      "forward": {
+        "arguments": "self, images: torch.Tensor",
+        "returns": "torch.Tensor"
+      }
+    },
+    "build_encoder": {
+      "arguments": "config: dict",
+      "returns": "nn.Module"
+    }
+  },
+  "model/vqgan/utils.py": {
+    "normalize": {
+      "arguments": "in_channels, **kwargs",
+      "returns": null
+    },
+    "swish": {
+      "arguments": "x",
+      "returns": null
+    }
+  },
+  "model/vqgan/vector_quantizer.py": {
+    "VectorQuantizer": {
+      "__init__": {
+        "arguments": "self, n_e: int, e_dim: int, beta: float",
+        "returns": null
+      },
+      "forward": {
+        "arguments": "self, latents: torch.Tensor",
+        "returns": null
+      },
+      "get_latents_from_ids": {
+        "arguments": "self, codes: torch.Tensor",
+        "returns": "torch.Tensor"
+      }
+    },
+    "build_vector_quantizer": {
+      "arguments": "config: dict",
+      "returns": "VectorQuantizer"
+    }
+  },
+  "model/vqgan/vqvae.py": {
+    "VQVAE": {
+      "__init__": {
+        "arguments": "self, config: dict",
+        "returns": null
+      },
+      "load_from_ckpt": {
+        "arguments": "self, ckpt_path: str",
+        "returns": null
+      },
+      "forward": {
+        "arguments": "self, images: torch.Tensor",
+        "returns": "DictWrapper[str, Any]"
+      },
+      "get_latents_from_ids": {
+        "arguments": "self, latents_ids: torch.Tensor",
+        "returns": "torch.Tensor"
+      },
+      "decode": {
+        "arguments": "self, latents_ids: torch.Tensor",
+        "returns": "torch.Tensor"
+      },
+      "decode_from_latents": {
+        "arguments": "self, latents: torch.Tensor",
+        "returns": "torch.Tensor"
+      }
+    },
+    "build_vqvae": {
+      "arguments": "config: dict, convert_to_sequence: bool=False",
+      "returns": null
+    }
+  },
+  "scientific/__init__.py": {},
+  "scientific/baselines.py": {
+    "persistence": {
+      "arguments": "context: torch.Tensor, horizon: int",
+      "returns": "torch.Tensor"
+    },
+    "optical_flow": {
+      "arguments": "context: torch.Tensor, horizon: int",
+      "returns": "torch.Tensor"
+    },
+    "Spatial": {
+      "__init__": {
+        "arguments": "self, incoming, outgoing, stride, transpose=False",
+        "returns": null
+      },
+      "forward": {
+        "arguments": "self, value",
+        "returns": null
+      }
+    },
+    "Inception": {
+      "__init__": {
+        "arguments": "self, incoming, outgoing",
+        "returns": null
+      },
+      "forward": {
+        "arguments": "self, value",
+        "returns": null
+      }
+    },
+    "SimVP": {
+      "__init__": {
+        "arguments": "self, spatial_channels=32, temporal_channels=128, spatial_depth=4, temporal_depth=4, context_frames=None",
+        "returns": null
+      },
+      "chunk": {
+        "arguments": "self, frames",
+        "returns": null
+      },
+      "forward": {
+        "arguments": "self, context, horizon",
+        "returns": null
+      }
+    }
+  },
+  "scientific/cli.py": {
+    "inventory": {
+      "arguments": "cfg, output",
+      "returns": null
+    },
+    "download": {
+      "arguments": "cfg, root",
+      "returns": null
+    },
+    "doctor": {
+      "arguments": "",
+      "returns": null
+    },
+    "check_data": {
+      "arguments": "root, cfg=None",
+      "returns": null
+    },
+    "summarize": {
+      "arguments": "inputs, output, cfg",
+      "returns": null
+    },
+    "add_monitoring_arguments": {
+      "arguments": "command",
+      "returns": null
+    },
+    "main": {
+      "arguments": "argv=None",
+      "returns": null
+    }
+  },
+  "scientific/data.py": {
+    "extract_smoke": {
+      "arguments": "frames: np.ndarray, settings: dict, extractor=None",
+      "returns": "tuple[np.ndarray, np.ndarray]"
+    },
+    "validate_indices": {
+      "arguments": "indices, timestamps",
+      "returns": "None"
+    },
+    "prepare": {
+      "arguments": "metadata: list[dict], video_root: Path, output: Path, cfg: dict, metadata_path: Path | None=None, device='auto', cache_dir=None, local_files_only=False, batch_frames=None, resume=False",
+      "returns": "dict"
+    },
+    "WindowDataset": {
+      "__init__": {
+        "arguments": "self, root, split: str, verify: bool=True",
+        "returns": null
+      },
+      "__len__": {
+        "arguments": "self",
+        "returns": null
+      },
+      "__getitem__": {
+        "arguments": "self, index",
+        "returns": null
+      }
+    }
+  },
+  "scientific/metrics.py": {
+    "build_lpips": {
+      "arguments": "device",
+      "returns": null
+    },
+    "frame_metrics": {
+      "arguments": "prediction, target, alpha, perceptual",
+      "returns": "list[dict]"
+    },
+    "diversity": {
+      "arguments": "predictions: list[torch.Tensor]",
+      "returns": "list[float]"
+    },
+    "paired_bootstrap": {
+      "arguments": "rows: list[dict], method: str, reference: str, metric='lpips', replicates=2000, seed=42",
+      "returns": "dict"
+    }
+  },
+  "scientific/monitoring.py": {
+    "preserve_rng": {
+      "arguments": "",
+      "returns": null
+    },
+    "WandbOptions": {},
+    "WandbMonitor": {
+      "__init__": {
+        "arguments": "self, directory, cfg, method, seed, options: WandbOptions, resume=False",
+        "returns": null
+      },
+      "__enter__": {
+        "arguments": "self",
+        "returns": null
+      },
+      "should_log": {
+        "arguments": "self, step",
+        "returns": null
+      },
+      "should_media": {
+        "arguments": "self, step, final=False",
+        "returns": null
+      },
+      "log": {
+        "arguments": "self, step, values, images=None",
+        "returns": null
+      },
+      "__exit__": {
+        "arguments": "self, exc_type, exc, tb",
+        "returns": null
+      }
+    },
+    "image_panel": {
+      "arguments": "real, reconstructed",
+      "returns": null
+    },
+    "error_panel": {
+      "arguments": "real, reconstructed, alpha",
+      "returns": null
+    },
+    "record_metrics": {
+      "arguments": "directory, step, values, monitor=None, images=None",
+      "returns": null
+    },
+    "gpu_metrics": {
+      "arguments": "device",
+      "returns": null
+    }
+  },
+  "scientific/pipeline.py": {
+    "Stage": {},
+    "source_fingerprint": {
+      "arguments": "",
+      "returns": "str"
+    },
+    "build_stages": {
+      "arguments": "cfg: dict, args, protocol: Path",
+      "returns": "list[Stage]"
+    },
+    "execute_process": {
+      "arguments": "command: tuple[str, ...], log: Path, heartbeat",
+      "returns": "None"
+    },
+    "output_hashes": {
+      "arguments": "stage: Stage",
+      "returns": "dict"
+    },
+    "validate_stage": {
+      "arguments": "stage: Stage, cfg: dict",
+      "returns": "None"
+    },
+    "resume_command": {
+      "arguments": "stage: Stage, args",
+      "returns": "tuple[str, ...]"
+    },
+    "run_pipeline": {
+      "arguments": "cfg: dict, args, *, executor=execute_process",
+      "returns": "dict"
+    }
+  },
+  "scientific/protocol.py": {
+    "digest": {
+      "arguments": "value",
+      "returns": "str"
+    },
+    "file_hash": {
+      "arguments": "path",
+      "returns": "str"
+    },
+    "sources_compatible": {
+      "arguments": "previous, current, campaign=None, protocol_sha256=None",
+      "returns": "bool"
+    },
+    "write_json": {
+      "arguments": "path, value",
+      "returns": "None"
+    },
+    "read_jsonl": {
+      "arguments": "path",
+      "returns": "list[dict]"
+    },
+    "write_jsonl": {
+      "arguments": "path, records",
+      "returns": "None"
+    },
+    "load_protocol": {
+      "arguments": "path='configs/scientific_protocol.yaml'",
+      "returns": "dict"
+    },
+    "forecast_task": {
+      "arguments": "cfg, required=True",
+      "returns": null
+    },
+    "data_spec": {
+      "arguments": "cfg",
+      "returns": null
+    },
+    "validate_prepared_data": {
+      "arguments": "manifest, cfg",
+      "returns": null
+    },
+    "eligible": {
+      "arguments": "item: dict",
+      "returns": "bool"
+    },
+    "partition": {
+      "arguments": "item: dict",
+      "returns": "str"
+    },
+    "stratified_selection": {
+      "arguments": "records: list[dict], count: int, seed: int",
+      "returns": "list[dict]"
+    }
+  },
+  "scientific/runner.py": {
+    "seed_all": {
+      "arguments": "seed: int",
+      "returns": "None"
+    },
+    "synchronize": {
+      "arguments": "device",
+      "returns": "None"
+    },
+    "provenance": {
+      "arguments": "cfg, root=None",
+      "returns": "dict"
+    },
+    "check_resume_provenance": {
+      "arguments": "previous, current, campaign=None",
+      "returns": null
+    },
+    "model_for": {
+      "arguments": "cfg, method, autoencoder=None, pilot=False",
+      "returns": null
+    },
+    "finalize_selection": {
+      "arguments": "run, status, step, planned_updates",
+      "returns": null
+    },
+    "validate_artifact": {
+      "arguments": "path, cfg, root, method",
+      "returns": null
+    },
+    "predict": {
+      "arguments": "model, method, context, cfg, generator=None",
+      "returns": null
+    },
+    "batch_at": {
+      "arguments": "dataset, seed, step, offset, count, device, augment=True",
+      "returns": null
+    },
+    "parameters": {
+      "arguments": "model, method",
+      "returns": null
+    },
+    "loss_for": {
+      "arguments": "model, method, frames, alpha, cfg",
+      "returns": null
+    },
+    "validation_score": {
+      "arguments": "model, method, dataset, metric, cfg, device, *, return_snapshot=False",
+      "returns": null
+    },
+    "profile": {
+      "arguments": "cfg, output, device",
+      "returns": null
+    },
+    "train_predictor": {
+      "arguments": "cfg, root, method, seed, ae_path, pilot_path, run, device, resume=None, monitor=None",
+      "returns": null
+    },
+    "train_autoencoder": {
+      "arguments": "cfg, root, run, device, resume=None, monitor=None",
+      "returns": null
+    },
+    "inspect_autoencoder": {
+      "arguments": "cfg, root, campaign, checkpoint, device, output=None",
+      "returns": null
+    },
+    "evaluate": {
+      "arguments": "cfg, root, method, seed, checkpoint, autoencoder, split, output, device, metric=None",
+      "returns": null
+    }
+  },
+  "scientific/segmentation.py": {
+    "validate_settings": {
+      "arguments": "settings: dict",
+      "returns": "None"
+    },
+    "guided_filter": {
+      "arguments": "guide: np.ndarray, mask: np.ndarray, radius: int, epsilon: float",
+      "returns": "np.ndarray"
+    },
+    "refine_mask": {
+      "arguments": "frame: np.ndarray, scores: np.ndarray, settings: dict",
+      "returns": "np.ndarray"
+    },
+    "ClipSegExtractor": {
+      "__init__": {
+        "arguments": "self, settings: dict, device='auto', cache_dir=None, local_files_only=False, batch_frames=None",
+        "returns": null
+      },
+      "predict_scores_batch": {
+        "arguments": "self, frames: np.ndarray",
+        "returns": "np.ndarray"
+      },
+      "predict_scores": {
+        "arguments": "self, frame: np.ndarray",
+        "returns": "np.ndarray"
+      },
+      "__call__": {
+        "arguments": "self, frames: np.ndarray",
+        "returns": "tuple[np.ndarray, np.ndarray]"
+      }
+    }
+  },
+  "training/__init__.py": {},
+  "training/checkpoints.py": {
+    "capture_rng_state": {
+      "arguments": "",
+      "returns": "dict"
+    },
+    "restore_rng_state": {
+      "arguments": "state: dict",
+      "returns": "None"
+    },
+    "CheckpointWriteError": {},
+    "atomic_save": {
+      "arguments": "state: dict, path: Path",
+      "returns": "None"
+    },
+    "copy_checkpoint": {
+      "arguments": "source: Path, destination: Path",
+      "returns": "None"
+    },
+    "latest_checkpoint": {
+      "arguments": "run_dir: Path",
+      "returns": "Path | None"
+    },
+    "save_checkpoint": {
+      "arguments": "model, optimizer, scheduler, run_dir: Path, step: int, extra: dict | None=None, *, keep_last: int=2",
+      "returns": "Path"
+    },
+    "load_checkpoint": {
+      "arguments": "model, optimizer, scheduler, checkpoint_path: Path, device: torch.device",
+      "returns": "int"
+    }
+  }
+}

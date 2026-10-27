@@ -29,12 +29,12 @@ def test_generate_frames_accepts_one_or_multiple_condition_frames(condition_fram
     nn.Module.__init__(model)
     model.config = DictWrapper(
         {
-            "autoencoder": {"type": "ours", "encoder": {"out_channels": 2}},
+            "autoencoder": {"type": "vqgan", "encoder": {"out_channels": 2}},
         }
     )
     model.sigma = 0.001
     model.ae = _IdentityAutoencoder()
-    model.autoencoder = AutoencoderAdapter(model.ae, "ours")
+    model.autoencoder = AutoencoderAdapter(model.ae)
     model.vector_field_regressor = _ZeroVectorField()
     observations = torch.randn(1, condition_frames, 2, 4, 4)
 

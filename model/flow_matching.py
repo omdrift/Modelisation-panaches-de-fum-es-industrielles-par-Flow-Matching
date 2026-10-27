@@ -51,9 +51,8 @@ class FlowMatchingObjective:
             timestamps = timestamps.reshape(target_latents.size(0), 1, 1, 1)
 
         input_latents = (1 - (1 - self.sigma) * timestamps) * noise + timestamps * target_latents
-        target_vectors = (target_latents - (1 - self.sigma) * input_latents) / (
-            1 - (1 - self.sigma) * timestamps
-        )
+        # Algebraically equivalent to the conditional field, without cancellation near t=1.
+        target_vectors = target_latents - (1 - self.sigma) * noise
         smoke_mask = (target_latents.norm(dim=1, keepdim=True) > self.smoke_threshold).to(target_latents.dtype)
         return FlowMatchingSample(
             input_latents=input_latents,

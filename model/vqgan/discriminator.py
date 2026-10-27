@@ -4,7 +4,6 @@ Adapted from Taming Transformers: https://github.com/CompVis/taming-transformers
 """
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 def weights_init(m):
@@ -19,21 +18,17 @@ def weights_init(m):
 class NLayerDiscriminator(nn.Module):
     """PatchGAN discriminator for VQGAN adversarial training"""
     
-    def __init__(self, input_nc=3, ndf=64, n_layers=3, use_actnorm=False):
+    def __init__(self, input_nc=3, ndf=64, n_layers=3):
         """
         Args:
             input_nc: Number of input channels (3 for RGB)
             ndf: Number of base filters
             n_layers: Number of discriminator layers
-            use_actnorm: Use activation normalization instead of batch norm
         """
         super(NLayerDiscriminator, self).__init__()
         self.n_layers = n_layers
         
-        if use_actnorm:
-            norm_layer = nn.Identity  # Actnorm not implemented, fallback
-        else:
-            norm_layer = nn.BatchNorm2d
+        norm_layer = nn.BatchNorm2d
 
         sequence = [
             nn.Conv2d(input_nc, ndf, kernel_size=4, stride=2, padding=1),
@@ -75,38 +70,6 @@ class NLayerDiscriminator(nn.Module):
             [B, 1, H', W'] prediction map (higher = more real)
         """
         return self.model(input)
-
-
-def adopt_weight(weight, global_step, threshold=0, value=0.):
-    """
-    Gradually increase discriminator weight during training.
-    Helps stabilize early training by letting generator learn first.
-    """
-    if global_step < threshold:
-        weight = value
-    return weight
-
-
-def hinge_d_loss(logits_real, logits_fake):
-    """
-    Hinge loss for discriminator.
-    Encourages D(real) > 1 and D(fake) < -1
-    """
-    loss_real = torch.mean(F.relu(1. - logits_real))
-    loss_fake = torch.mean(F.relu(1. + logits_fake))
-    d_loss = 0.5 * (loss_real + loss_fake)
-    return d_loss
-
-
-def vanilla_d_loss(logits_real, logits_fake):
-    """
-    Vanilla GAN loss for discriminator.
-    Standard binary cross-entropy formulation.
-    """
-    loss_real = torch.mean(F.softplus(-logits_real))
-    loss_fake = torch.mean(F.softplus(logits_fake))
-    d_loss = 0.5 * (loss_real + loss_fake)
-    return d_loss
 
 
 def build_discriminator(input_nc=3, ndf=64, n_layers=3):

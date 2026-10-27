@@ -59,7 +59,7 @@ def test_vector_field_output_matches_latent_shape():
 def test_model_forward_prediction_matches_flow_target_shape():
     model = Model.__new__(Model)
     nn.Module.__init__(model)
-    model.config = DictWrapper({"autoencoder": {"type": "ours"}, "smoke_threshold": 0.1})
+    model.config = DictWrapper({"autoencoder": {"type": "vqgan"}, "smoke_threshold": 0.1})
     model.sigma = 0.001
     model.conditioning_sampler = ConditioningSampler()
     model.flow_matching_objective = FlowMatchingObjective(0.001, 0.1)

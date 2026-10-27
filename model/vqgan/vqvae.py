@@ -3,7 +3,6 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from lutils.configuration import Configuration
 from lutils.dict_wrapper import DictWrapper
 from model.layers.utils import SequenceConverter
 from model.vqgan.decoder import build_decoder
@@ -12,11 +11,10 @@ from model.vqgan.vector_quantizer import build_vector_quantizer
 
 
 class VQVAE(nn.Module):
-    def __init__(self, config: Configuration):
+    def __init__(self, config: dict):
         super(VQVAE, self).__init__()
 
         self.config = config
-
         # Configure encoder
         self.encoder = build_encoder(config=self.config["encoder"])
 
@@ -27,7 +25,7 @@ class VQVAE(nn.Module):
         self.vector_quantizer = build_vector_quantizer(config=self.config["vector_quantizer"])
 
     def load_from_ckpt(self, ckpt_path: str):
-        loaded_state = torch.load(ckpt_path, map_location="cpu")
+        loaded_state = torch.load(ckpt_path, map_location="cpu", weights_only=True)
 
         # Handle different checkpoint formats
         if "model" in loaded_state:
@@ -118,7 +116,7 @@ class VQVAE(nn.Module):
 
 
 
-def build_vqvae(config: Configuration, convert_to_sequence: bool = False):
+def build_vqvae(config: dict, convert_to_sequence: bool = False):
     backbone = VQVAE(config)
     if convert_to_sequence:
         return SequenceConverter(backbone)

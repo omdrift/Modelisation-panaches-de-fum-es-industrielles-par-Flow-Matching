@@ -1,0 +1,80 @@
+version: '1.1'
+name: rise_smoke_clipseg_guided_36
+metadata: prepare_data/metadata_02242020.json
+selection_seed: 42
+seeds: [17, 42, 2026]
+task:
+  resolution: 64
+  clip_frames: 36
+preprocessing:
+  backend: clipseg_guided
+  model_id: CIDAS/clipseg-rd64-refined
+  revision: 999e0328d9e10b484360c477313983f9afdd7050
+  weights_sha256: d00ca85d6b859f9d07b7cfb8ef26fe9771cb275b34c9368f2ecf603139307f55
+  smoke_prompt: smoke
+  negative_prompts: [a chimney, factory buildings]
+  smoke_background_threshold: 0.10
+  smoke_foreground_threshold: 0.40
+  negative_threshold: 0.60
+  negative_margin: 0.10
+  guided_radius: 4
+  guided_epsilon: 0.001
+selection:
+  validation_windows: 60
+  test_windows_per_split: 200
+training:
+  effective_batch_size: 16
+  max_updates: 100000
+  validation_every: 1000
+  learning_rate: 0.0001
+  weight_decay: 0.000005
+  warmup_updates: 1000
+  smoke_weight: 5.0
+  background_weight: 1.0
+  autoencoder_seed: 42
+  discriminator_start: 1000
+  # Exploratory VQGAN recipe: explicit, not yet selected by a smoke calibration.
+  # Common learning_rate/weight_decay/warmup/validation_every above apply to predictors.
+  autoencoder:
+    learning_rate: 0.0002
+    discriminator_learning_rate: 0.0002
+    weight_decay: 0.000001
+    betas: [0.9, 0.999]
+    epsilon: 0.00000001
+    schedule: constant
+    validation_every: 250
+    gradient_clip_norm: 1.0
+    reconstruction_weight: 1.0
+    perceptual_weight: 1.0
+    quantization_weight: 1.0
+    adversarial_weight: 0.1
+model:
+  sigma: 0.001
+  min_target_index: 2
+  mask_source: alpha
+  vector_field_regressor:
+    state_size: 256
+    state_res: [8, 8]
+    inner_dim: 512
+    depth: 6
+    mid_depth: 2
+    out_norm: ln
+  autoencoder:
+    type: vqgan
+    encoder: {in_channels: 3, out_channels: 256, mid_channels: 128}
+    decoder: {in_channels: 256, out_channels: 3, mid_channels: 128}
+    vector_quantizer: {embedding_dimension: 256, num_embeddings: 1024, commitment_cost: 0.1}
+simvp:
+  spatial_channels: 32
+  temporal_channels: 128
+  spatial_depth: 4
+  temporal_depth: 4
+evaluation:
+  context_frames: 5
+  horizon: 15
+  primary_metric: lpips_alex_v0.1
+  realizations: 4
+  ode_grid_points: 17
+  warm_start: 0.0
+  report_horizons: [1, 4, 8, 12, 15]
+  bootstrap_replicates: 2000
