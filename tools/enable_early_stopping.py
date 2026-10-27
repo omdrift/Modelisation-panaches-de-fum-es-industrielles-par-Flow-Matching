@@ -25,6 +25,17 @@ def _write_protocol(path, cfg):
     temporary.replace(path)
 
 
+def _apply_upgrade(campaign, receipt):
+    pipeline_path = campaign / 'pipeline.json'
+    state = json.loads(pipeline_path.read_text()) if pipeline_path.is_file() else None
+    if state is not None and state['identity'] not in (receipt['before_pipeline_identity'], receipt['after_pipeline_identity']):
+        raise ValueError('Pipeline identity changed outside this recorded upgrade')
+    _write_protocol(campaign / 'protocol.yaml', receipt['after_protocol'])
+    if state is not None:
+        state['identity'] = receipt['after_pipeline_identity']
+        write_json(pipeline_path, state)
+
+
 def enable(campaign, previous_source_root, *, source_root=REPOSITORY, **policy):
     """Record a verifiable policy/source transition; never launch training."""
     campaign = Path(campaign)
@@ -49,7 +60,7 @@ def enable(campaign, previous_source_root, *, source_root=REPOSITORY, **policy):
                     or receipt['after_protocol']['training']['early_stopping'] != after['training']['early_stopping']
                     or cfg not in (receipt['before_protocol'], receipt['after_protocol'])):
                 raise ValueError('Existing maintenance receipt does not authorize this upgrade')
-            _write_protocol(path, receipt['after_protocol'])
+            _apply_upgrade(campaign, receipt)
             return dict(status='already_enabled', policy=after['training']['early_stopping'])
         if settings(cfg)['enabled']:
             raise ValueError('Campaign already declares early stopping; its policy remains frozen')
@@ -65,17 +76,22 @@ def enable(campaign, previous_source_root, *, source_root=REPOSITORY, **policy):
         origins = [json.loads(p.read_text()) for p in campaign.glob('*/run.json')]
         if (campaign / 'pilot.json').exists():
             origins.append(json.loads((campaign / 'pilot.json').read_text())['provenance'])
-        if (campaign / 'pipeline.json').exists():
-            origins.append(json.loads((campaign / 'pipeline.json').read_text())['identity'])
         if not origins or any(origin.get('source_sha256') != previous_sha or origin.get('protocol_sha256') != digest(cfg) for origin in origins):
             raise ValueError('Previous source directory does not match the recorded campaign identity')
+        pipeline_path = campaign / 'pipeline.json'
+        old_identity = json.loads(pipeline_path.read_text())['identity'] if pipeline_path.is_file() else None
+        if old_identity is not None and old_identity.get('protocol_sha256') != digest(cfg):
+            raise ValueError('Supervisor protocol does not match the recorded training protocol')
+        new_identity = (old_identity | dict(protocol_sha256=digest(after), source_sha256=digest(after_sources))) if old_identity is not None else None
         receipt = dict(kind='validation_early_stopping', recorded_at_utc=datetime.now(timezone.utc).isoformat(),
             before_protocol=cfg, after_protocol=after, protocol_sha256=digest(after),
             before_sources=before_sources, after_sources=after_sources,
+            before_pipeline_identity=old_identity, after_pipeline_identity=new_identity,
+            source_identity_note='Training and pilot sources are verified against the snapshot; the original supervisor identity is preserved separately.',
             patience_history='starts on resume, anchored to the saved best validation LPIPS; no retrospective stop',
             changed_files=sorted(changed))
         write_json(existing, receipt)
-        _write_protocol(path, after)
+        _apply_upgrade(campaign, receipt)
         return dict(status='enabled', policy=after['training']['early_stopping'], protocol_sha256=digest(after))
 
 
