@@ -12,6 +12,14 @@ from uuid import uuid4
 
 def reading_guide(method: str) -> str:
     """Keep interpretation beside the curves, including their limits."""
+    if method == 'campaign_monitor':
+        return '''### Suivre toute la campagne
+Le temps horizontal représente les secondes observées par ce suivi séparé, pas les mises à jour d'un modèle ni le temps GPU cumulé.
+
+Le tableau d'état contient les étapes en attente, la préparation, le pilote synthétique, les graines, les checkpoints sélectionnés, la patience et les diagnostics selon l'horizon. Les durées des étapes sont celles de la dernière exécution enregistrée.
+
+Un modèle Flow Matching apparaît dans sa vue dès son démarrage. Les tests restent **non évalués** tant que leurs sorties ne sont pas produites ; les résultats finaux apparaissent après la synthèse terminée. Le nombre d'archives indique une progression d'écriture, sans valider leur contenu. Ce suivi lit les fichiers et ne lance ni entraînement ni sélection sur test.
+'''
     common = '''### Lire les courbes
 Chaque point de qualité utilise les mêmes exemples fixes, en mode évaluation. L'axe horizontal compte les mises à jour de l'optimiseur.
 
@@ -34,11 +42,24 @@ Le drapeau booléen « surapprentissage » reste dans les diagnostics enregistr�
 '''
     else:
         common += '\n**Prédicteur :** la perte d’entraînement et la LPIPS de validation mesurent des objectifs différents. Les réglages exécutés figurent dans `effective_training.json` ; leur présence dans une configuration ne constitue pas une calibration.\n'
+        if method.startswith('flow'):
+            common += '\n**Flow Matching :** le VQGAN est gelé. La validation utilise 1 réalisation fixe par fenêtre ; les tests finaux utilisent 4 réalisations, sans sélection de la meilleure. La perte pondérée et la perte uniforme ne se comparent pas directement comme des scores de qualité. NFE, diversité et coût des générations sont exportés lors des tests.\n'
     return common
 
 
 def section_plan(method: str) -> list[dict]:
     """Comparable quantities share a chart; detailed diagnostics stay collapsed."""
+    if method == 'campaign_monitor':
+        return [dict(name='Comprendre la campagne', open=True, markdown=[reading_guide(method)]),
+            dict(name='Avancement global', open=True, x='observer/elapsed_seconds', title_x='Temps de suivi (secondes)', charts=[
+                ('Étapes terminées / prévues', ['campaign/completed_stages', 'campaign/total_stages']),
+                ('Entraînements terminés / prévus', ['training/completed_runs', 'training/total_runs']),
+                ('Tests terminés / prévus', ['evaluation/completed_runs', 'evaluation/total_runs']),
+                ('Étapes en échec', ['campaign/failed_stages'])]),
+            dict(name='État détaillé et horizons', open=True, media=['observer/status'], media_title='Étapes, données, pilote, modèles et tests'),
+            dict(name='Résultats finaux', open=False,
+                media=['observer/quality_cost', 'observer/test_dates_horizons', 'observer/test_views_horizons'],
+                media_title='Résultats disponibles après la synthèse finale')]
     quality = [
         ('LPIPS ↓ : apprentissage et validation', ['train_eval/lpips', 'validation/lpips', 'selection/best_validation_lpips']),
         ('MSE fumée estimée ↓ — RGB [0,1]', ['train_eval/smoke_mse', 'validation/smoke_mse']),
@@ -76,14 +97,14 @@ def section_plan(method: str) -> list[dict]:
 def build_sections(plan, ws, wr, *, serialize=True) -> list:
     sections = []
     for entry in plan:
-        panels = [wr.LinePlot(title=title, x='global_step', y=keys,
-                             title_x='Mise à jour', smoothing_type='none',
+        panels = [wr.LinePlot(title=title, x=entry.get('x', 'global_step'), y=keys,
+                             title_x=entry.get('title_x', 'Mise à jour'), smoothing_type='none',
                              point_visualization_method='bucketing-gorilla')
                   for title, keys in entry.get('charts', [])]
         panels += [wr.LinePlot(title=title, x='global_step', metric_regex=pattern,
                               title_x='Mise à jour', smoothing_type='none')
                    for title, pattern in entry.get('regex', [])]
-        panels += [wr.MediaBrowser(title='RGB réel | reconstruction/prédiction | erreur | masque estimé',
+        panels += [wr.MediaBrowser(title=entry.get('media_title', 'RGB réel | reconstruction/prédiction | erreur | masque estimé'),
                                    media_keys=[key], num_columns=1)
                    for key in entry.get('media', [])]
         panels += [wr.MarkdownPanel(markdown=markdown, layout=wr.Layout(w=24, h=14))
@@ -208,7 +229,7 @@ def main(argv=None):
     run = Path(args.run_directory)
     identity = json.loads((run / 'wandb.json').read_text())
     method = json.loads((run / 'run.json').read_text()).get('method', 'vqgan' if run.name == 'autoencoder' else None)
-    if method not in ('vqgan', 'simvp', 'flow_alpha', 'flow_uniform'):
+    if method not in ('vqgan', 'simvp', 'flow_alpha', 'flow_uniform', 'campaign_monitor'):
         parser.error('Select a VQGAN or predictor run directory')
     print(json.dumps(configure(identity, method, run.parent / 'dashboard', apply=args.apply), indent=2, ensure_ascii=False))
 
