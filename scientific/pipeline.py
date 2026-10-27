@@ -17,7 +17,7 @@ import time
 
 import yaml
 
-from scientific.protocol import digest, file_hash, LEARNED, write_json, validate_prepared_data, sources_compatible, _source_manifest
+from scientific.protocol import digest, file_hash, LEARNED, write_json, validate_prepared_data, sources_compatible, _source_manifest, _protocols_compatible
 
 
 @dataclass(frozen=True)
@@ -133,7 +133,7 @@ def validate_stage(stage: Stage, cfg: dict) -> None:
         validate_prepared_data(json.loads(stage.outputs[0].read_text()), cfg)
     elif stage.name == 'vqgan' or stage.name.startswith('train_'):
         metadata = json.loads(stage.outputs[0].read_text())
-        if metadata.get('status') != 'complete' or metadata.get('protocol_sha256') != digest(cfg):
+        if metadata.get('status') != 'complete' or not _protocols_compatible(metadata.get('protocol_sha256'), digest(cfg), stage.outputs[0].parent.parent):
             raise ValueError(f'Training stage is incomplete or uses another protocol: {stage.name}')
     elif stage.name.startswith('evaluate_'):
         metadata = json.loads(stage.outputs[0].read_text())
@@ -205,6 +205,8 @@ def _run_locked(cfg, args, stages, frozen, executor):
             raise FileExistsError('Campaign already exists; add --resume to verify and continue it')
         state = json.loads(state_path.read_text())
         previous = dict(state['identity'])
+        if _protocols_compatible(previous.get('protocol_sha256'), identity['protocol_sha256'], campaign):
+            previous['protocol_sha256'] = identity['protocol_sha256']
         if sources_compatible(previous.get('source_sha256'), identity['source_sha256'], campaign, identity['protocol_sha256']):
             previous['source_sha256'] = identity['source_sha256']
         if (Path(args.data) / 'dataset_manifest.json').is_file():
@@ -215,6 +217,7 @@ def _run_locked(cfg, args, stages, frozen, executor):
             raise ValueError('Pipeline resume requires identical sources, data paths, methods, seeds and protocol')
         if not frozen.is_file() or yaml.safe_load(frozen.read_text()) != cfg:
             raise ValueError('Frozen campaign protocol was changed')
+        state['identity'].update(protocol_sha256=identity['protocol_sha256'], source_sha256=identity['source_sha256'])
     else:
         occupied = [campaign / name for name in ('autoencoder', 'pilot.json', 'evaluation')]
         occupied.extend(campaign / f'{m}_{s}' for m in args.methods for s in args.seeds)

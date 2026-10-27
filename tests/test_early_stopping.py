@@ -95,7 +95,7 @@ def tiny_training(tmp_path, monkeypatch):
     import model.vqgan.discriminator as discriminator_module
 
     cfg = configured_policy()
-    cfg['training'].update(max_updates=12, validation_every=2, discriminator_start=0)
+    cfg['training'].update(max_updates=12, validation_every=2, discriminator_start=0, warmup_updates=1)
     cfg['training']['autoencoder']['validation_every'] = 2
     data = tmp_path / 'data'
     data.mkdir()
@@ -149,7 +149,7 @@ def tiny_training(tmp_path, monkeypatch):
         controls['pending_validation'] = False
         controls['validation_calls'] += 1
         result = Snapshot()
-        result.score = controls['score']
+        result.score = controls.get('scores', [controls['score']] * 20)[controls['validation_calls'] - 1]
         if controls.get('failure') == 'validation' and controls['validation_calls'] == 2:
             raise RuntimeError('validation interrupted')
         return result
@@ -258,3 +258,75 @@ def test_completion_cannot_lower_the_frozen_cap_or_claim_an_unproven_plateau(ena
                                          termination_reason='early_stopping'))
     assert not completion_valid(cfg, dict(status='complete', completed_updates=12, planned_updates=12,
                                          termination_reason='early_stopping'))
+
+
+@pytest.mark.parametrize('method', ['vqgan', 'simvp', 'flow_uniform', 'flow_alpha'])
+def test_raw_best_can_improve_without_resetting_patience(tiny_training, method):
+    cfg, run, controls, train, validate = tiny_training
+    controls['scores'] = [0.3, 0.25, 0.24995, 0.28]
+    train(method)
+    assert json.loads((run / 'run.json').read_text())['completed_updates'] == 8
+    selected = validate(method)
+    assert selected['step'] == 6
+    assert selected['extra']['best_validation_lpips'] == 0.24995
+
+
+@pytest.mark.parametrize('method', ['vqgan', 'simvp', 'flow_uniform', 'flow_alpha'])
+def test_stopping_waits_for_warmup_or_adversarial_activation(tiny_training, method):
+    cfg, run, _, train, validate = tiny_training
+    cfg['training']['discriminator_start' if method == 'vqgan' else 'warmup_updates'] = 6 if method == 'vqgan' else 8
+    pilot_path = run.parent / 'pilot.json'
+    pilot = json.loads(pilot_path.read_text())
+    pilot['provenance']['protocol_sha256'] = digest(cfg)
+    write_json(pilot_path, pilot)
+    train(method)
+    assert json.loads((run / 'run.json').read_text())['completed_updates'] == 10
+    assert validate(method)['extra']['completion']['termination_reason'] == 'early_stopping'
+
+
+@pytest.mark.parametrize('method', ['vqgan', 'simvp', 'flow_uniform', 'flow_alpha'])
+def test_legacy_opt_in_continues_from_saved_optimizer_step(tiny_training, tmp_path, monkeypatch, method):
+    from scientific import runner
+    from scientific.protocol import _source_manifest
+    from tools.enable_early_stopping import enable
+    from training.checkpoints import latest_checkpoint
+    cfg, run, controls, train, validate = tiny_training
+    cfg['training'].pop('early_stopping')
+    campaign = run.parent
+    (campaign / 'protocol.yaml').write_text(__import__('yaml').safe_dump(cfg))
+    before, after = tmp_path / 'before', tmp_path / 'after'
+    for root, content in ((before, 'before'), (after, 'after')):
+        (root / 'scientific').mkdir(parents=True)
+        (root / 'scientific/runner.py').write_text(content)
+    source = {'sha': digest(_source_manifest(before))}
+    original_provenance = runner.provenance
+    monkeypatch.setattr(runner, 'provenance', lambda cfg, root=None:
+                        original_provenance(cfg, root) | {'source_sha256': source['sha']})
+    pilot_path = campaign / 'pilot.json'
+    pilot = json.loads(pilot_path.read_text())
+    pilot['provenance'].update(protocol_sha256=digest(cfg), source_sha256=source['sha'])
+    write_json(pilot_path, pilot)
+    original_log = runner.record_metrics
+
+    def interrupted(directory, step, values, *args):
+        if step == 4 and 'validation/lpips' in values:
+            raise RuntimeError('saved legacy checkpoint')
+        return original_log(directory, step, values, *args)
+
+    monkeypatch.setattr(runner, 'record_metrics', interrupted)
+    with pytest.raises(RuntimeError, match='saved legacy checkpoint'):
+        train(method)
+    checkpoint = latest_checkpoint(run)
+    assert torch.load(checkpoint, weights_only=True)['step'] == 4
+    original_hash = file_hash(checkpoint)
+    enable(campaign, before, source_root=after, patience=2, min_updates=0)
+    assert file_hash(checkpoint) == original_hash
+    updated = load_protocol(campaign / 'protocol.yaml')
+    cfg.clear()
+    cfg.update(updated)
+    source['sha'] = digest(_source_manifest(after))
+    monkeypatch.setattr(runner, 'record_metrics', original_log)
+    controls['pending_validation'] = True
+    train(method, checkpoint)
+    assert json.loads((run / 'run.json').read_text())['completed_updates'] == 6
+    assert validate(method)['extra']['completion']['termination_reason'] == 'early_stopping'

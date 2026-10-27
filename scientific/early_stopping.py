@@ -63,7 +63,7 @@ class EarlyStopping:
     def stopped(self) -> bool:
         return self._state['stopped']
 
-    def observe(self, score: float, step: int) -> None:
+    def observe(self, score: float, step: int, *, eligible: bool = True) -> None:
         if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
             raise ValueError('Early stopping requires a finite validation LPIPS')
         if type(step) is not int or step <= self._state['last_step'] or self.stopped:
@@ -72,7 +72,7 @@ class EarlyStopping:
         improved = previous is None or score < previous - self.policy['min_delta']
         if improved:
             self._state.update(best_score=score, best_step=step, bad_checks=0)
-        elif self.policy['enabled'] and step >= self.policy['min_updates']:
+        elif self.policy['enabled'] and eligible and step >= self.policy['min_updates']:
             self._state['bad_checks'] += 1
         else:
             self._state['bad_checks'] = 0
@@ -91,10 +91,10 @@ def completion_valid(cfg: dict, completion: dict) -> bool:
     """A short run is complete only with a policy-bound plateau decision."""
     completed, planned = completion.get('completed_updates'), completion.get('planned_updates')
     if (completion.get('status') != 'complete' or type(completed) is not int or type(planned) is not int
-            or not 1 <= completed <= planned):
+            or planned != cfg['training']['max_updates'] or not 1 <= completed <= planned):
         return False
     if completed == planned:
-        return True
+        return completion.get('termination_reason', 'max_updates') == 'max_updates'
     if completion.get('termination_reason') != 'early_stopping' or planned != cfg['training']['max_updates']:
         return False
     try:

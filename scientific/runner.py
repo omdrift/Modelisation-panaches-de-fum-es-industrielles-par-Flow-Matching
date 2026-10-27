@@ -27,7 +27,7 @@ from scientific.monitoring import gpu_metrics, image_panel, error_panel, preserv
 from scientific.diagnostics import reconstruction_snapshot, forecast_snapshot, export_snapshot, selection_details, plot_history
 from scientific.hyperparameters import autoencoder_settings, training_description
 from scientific.early_stopping import EarlyStopping, completion_valid
-from scientific.protocol import digest, file_hash, write_json, LEARNED, forecast_task, sources_compatible, _source_manifest
+from scientific.protocol import digest, file_hash, write_json, LEARNED, forecast_task, sources_compatible, _source_manifest, _protocols_compatible, _early_stopping_upgrade
 from training.checkpoints import capture_rng_state, restore_rng_state, save_checkpoint, load_checkpoint, atomic_save, copy_checkpoint, latest_checkpoint, CheckpointWriteError
 
 
@@ -66,6 +66,10 @@ def check_resume_provenance(previous, current, campaign=None):
     informational = {'command', 'commit', 'tracked_diff_sha256'}
     previous = {k: v for k, v in previous.items() if k not in informational}
     current = {k: v for k, v in current.items() if k not in informational}
+    if _protocols_compatible(previous.get('protocol_sha256'), current.get('protocol_sha256'), campaign):
+        for key in ('protocol_sha256', 'protocol'):
+            if key in current:
+                previous[key] = current[key]
     if ('source_sha256' in current and previous.get('source_sha256') != current['source_sha256']
             and sources_compatible(previous.get('source_sha256'), current['source_sha256'], campaign, current.get('protocol_sha256'))):
         previous['source_sha256'] = current['source_sha256']
@@ -114,7 +118,8 @@ def validate_artifact(path, cfg, root, method):
     origin = extra.get('provenance', {})
     completion = extra.get('completion', {})
     allowed = ('complete',)
-    if (origin.get('method') != method or origin.get('protocol_sha256') != digest(cfg)
+    campaign = Path(path).parent.parent
+    if (origin.get('method') != method or not _protocols_compatible(origin.get('protocol_sha256'), digest(cfg), campaign)
             or origin.get('dataset_sha256') != file_hash(Path(root) / 'dataset_manifest.json')
             or completion.get('status') not in allowed or extra.get('best_validation_lpips') is None):
         raise ValueError('Artifact must be a selected, validated scientific checkpoint for this dataset/protocol')
@@ -126,6 +131,8 @@ def validate_artifact(path, cfg, root, method):
         raise ValueError('Scientific sources changed since the checkpoint was produced')
     if not completion_valid(cfg, completion):
         raise ValueError('Incomplete training or invalid early stopping proof')
+    if type(state['step']) is not int or not 1 <= state['step'] <= completion['completed_updates']:
+        raise ValueError('Selection step is outside the completed training')
     return state
 
 
@@ -137,6 +144,21 @@ def _completion(step, total, stopper):
     return dict(status='complete', completed_updates=step, planned_updates=total,
                 termination_reason='early_stopping' if stopper.stopped and step < total else 'max_updates',
                 early_stopping=stopper.state_dict())
+
+
+def _resume_stopper(cfg, extra, best_score, best_step, last_validated, campaign):
+    """Opt-in legacy resumes start fresh patience anchored to their saved best."""
+    saved = extra.get('early_stopping')
+    if saved is not None and not saved.get('settings', {}).get('enabled'):
+        receipt = _early_stopping_upgrade(campaign)
+        if receipt is not None and receipt['after_protocol'] == cfg:
+            saved = None
+    stopper = EarlyStopping(cfg, saved)
+    if saved is None and best_score is not None and last_validated > 0:
+        state = stopper.state_dict()
+        state.update(best_score=best_score, best_step=best_step or last_validated, last_step=last_validated)
+        stopper = EarlyStopping(cfg, state)
+    return stopper
 
 
 def predict(model, method, context, cfg, generator=None):
@@ -256,7 +278,7 @@ def profile(cfg, output, device):
 def train_predictor(cfg, root, method, seed, ae_path, pilot_path, run, device, resume=None, monitor=None):
     forecast_task(cfg)
     pilot = json.loads(Path(pilot_path).read_text())
-    if pilot['provenance']['protocol_sha256'] != digest(cfg):
+    if not _protocols_compatible(pilot['provenance']['protocol_sha256'], digest(cfg), Path(pilot_path).parent):
         raise ValueError('Pilot belongs to a different protocol')
     current = provenance(cfg)
     if (not sources_compatible(pilot['provenance']['source_sha256'], current['source_sha256'], Path(pilot_path).parent, digest(cfg))
@@ -291,7 +313,7 @@ def train_predictor(cfg, root, method, seed, ae_path, pilot_path, run, device, r
     elif (run / 'run.json').exists():
         raise FileExistsError('Existing run: use --resume explicitly')
     best_step, best_diagnostics = selection_details(run, extra['best_validation_lpips'])
-    stopper = EarlyStopping(cfg, extra.get('early_stopping'))
+    stopper = _resume_stopper(cfg, extra, extra['best_validation_lpips'], best_step, extra.get('last_validated_step', 0), run.parent)
     write_json(run / 'effective_training.json', training_description(cfg, method))
     write_json(run / 'run.json', metadata | {'status': 'running'})
     total = cfg['training']['max_updates']
@@ -332,7 +354,7 @@ def train_predictor(cfg, root, method, seed, ae_path, pilot_path, run, device, r
                     lambda context, generator: predict(model, method, context, cfg, generator)[0], train_panel=True)
                 score = val_snapshot.score
                 candidate_stopper = EarlyStopping(cfg, stopper.state_dict())
-                candidate_stopper.observe(score, step)
+                candidate_stopper.observe(score, step, eligible=step >= cfg['training']['warmup_updates'])
                 improved = extra['best_validation_lpips'] is None or score < extra['best_validation_lpips']
                 if improved:
                     best_step = step
@@ -419,12 +441,13 @@ def train_autoencoder(cfg, root, run, device, resume=None, monitor=None):
         optimizer_d.load_state_dict(state['extra']['optimizer_d'])
         best = state['extra']['best_validation_lpips']
         last_validated_step = state['extra'].get('last_validated_step', 0)
-        stopper = EarlyStopping(cfg, state['extra'].get('early_stopping'))
         if state['extra'].get('best_checkpoint_pending'):
             copy_checkpoint(resume, run / 'best.pth')
     elif (run / 'run.json').exists():
         raise FileExistsError('Existing autoencoder run; use --resume')
     best_step, best_diagnostics = selection_details(run, best)
+    if resume:
+        stopper = _resume_stopper(cfg, state['extra'], best, best_step, last_validated_step, run.parent)
     write_json(run / 'effective_training.json', training_description(cfg, 'vqgan'))
     write_json(run / 'run.json', metadata | dict(status='running'))
     print(json.dumps(dict(method='vqgan', step=step, total_updates=cfg['training']['max_updates'], status='training')), flush=True)
@@ -489,7 +512,7 @@ def train_autoencoder(cfg, root, run, device, resume=None, monitor=None):
                 show_images = monitor is not None and monitor.should_media(step, step == cfg['training']['max_updates'])
                 score = val_snapshot.score
                 candidate_stopper = EarlyStopping(cfg, stopper.state_dict())
-                candidate_stopper.observe(score, step)
+                candidate_stopper.observe(score, step, eligible=step > cfg['training']['discriminator_start'])
                 improved = best is None or score < best
                 candidate_best = score if improved else best
                 candidate_step = step if improved else best_step

@@ -72,6 +72,7 @@ class WandbMonitor:
                     name=self.options.name or f'{self.directory.parent.name}-{self.method}-{self.seed}',
                     group=self.options.group or self.directory.parent.name, job_type=self.method,
                     mode=self.options.mode, resume='allow' if self.options.mode == 'online' else None,
+                    allow_val_change=self.resume,
                     dir=str(session), config=configuration,
                     save_code=False,
                     settings=wandb.Settings(disable_code=True, disable_git=True, disable_job_creation=True, console='off', init_timeout=30),
