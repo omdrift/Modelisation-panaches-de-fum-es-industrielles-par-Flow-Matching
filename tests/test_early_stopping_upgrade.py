@@ -34,10 +34,17 @@ def old_campaign(tmp_path):
     return cfg, campaign, before, current, origin
 
 
-def test_upgrade_only_adds_policy_and_binds_sources_without_rewriting_weights(old_campaign):
+@pytest.mark.parametrize('distinct_supervisor', [False, True])
+def test_upgrade_only_adds_policy_and_binds_sources_without_rewriting_weights(old_campaign, distinct_supervisor):
     from tools.enable_early_stopping import enable
     from scientific.runner import check_resume_provenance
     cfg, campaign, before, current, origin = old_campaign
+    pipeline_path = campaign / 'pipeline.json'
+    pipeline = json.loads(pipeline_path.read_text())
+    if distinct_supervisor:
+        pipeline['identity']['source_sha256'] = '0' * 64
+        write_json(pipeline_path, pipeline)
+    old_identity = copy.deepcopy(pipeline['identity'])
     result = enable(campaign, before, source_root=current)
     after = load_protocol(campaign / 'protocol.yaml')
     expected = copy.deepcopy(cfg)
@@ -49,6 +56,8 @@ def test_upgrade_only_adds_policy_and_binds_sources_without_rewriting_weights(ol
     receipt = json.loads((campaign / 'maintenance.json').read_text())
     assert receipt['before_protocol'] == cfg and receipt['after_protocol'] == after
     new_source = digest(_source_manifest(current))
+    assert receipt['before_pipeline_identity'] == old_identity
+    assert json.loads(pipeline_path.read_text())['identity'] == old_identity | dict(source_sha256=new_source, protocol_sha256=digest(after))
     assert sources_compatible(origin['source_sha256'], new_source, campaign, digest(after))
     resumed = origin | dict(protocol=after, protocol_sha256=digest(after), source_sha256=new_source)
     check_resume_provenance(origin, resumed, campaign)
