@@ -20,10 +20,11 @@ Chaque point de qualité utilise les mêmes exemples fixes, en mode évaluation.
 | La qualité progresse-t-elle ? | **LPIPS ↓** mesure l'écart perceptuel. Comparer apprentissage et validation ; aucune valeur ne garantit à elle seule un bon modèle. |
 | La fumée est-elle conservée ? | **MSE fumée ↓**, sur RGB dans [0,1], complète la MSE du fond. Les masques sont estimés ; une région absente est exclue, pas comptée comme erreur nulle. |
 | Le modèle généralise-t-il ? | **Écart LPIPS = validation − apprentissage**. Une hausse durable de validation avec baisse en apprentissage est un signal à examiner, pas une preuve automatique. Les dates et les vues peuvent différer. |
+| Que signifient les tendances ? | La pente estime la **variation de LPIPS par 1 000 mises à jour**, sur les cinq dernières validations. Une pente négative indique une baisse de l'erreur ; une pente positive, une hausse. Une pente d'apprentissage négative avec une pente de validation positive appelle un examen ; cette tendance locale peut fluctuer. |
 | Quand l'entraînement s'arrête-t-il ? | Si activée, la **patience** compte les validations sans baisse significative de LPIPS. L'arrêt intervient lorsque le compteur atteint le seuil, après le minimum de mises à jour et la phase initiale ; les valeurs effectives figurent dans la configuration du run. |
 | Que regarder visuellement ? | Les images fixes montrent RGB réel, reconstruction/prédiction, erreur et masque estimé. Vérifier disparition, artefacts de fond et contours. |
 
-Le drapeau « surapprentissage » utilise cinq validations et un seuil exploratoire de 10 %. Il n'arrête pas l'entraînement et ne certifie pas l'absence de surapprentissage. Le meilleur checkpoint minimise la LPIPS de validation ; les tests restent réservés à l'évaluation finale.
+Le drapeau booléen « surapprentissage » reste dans les diagnostics enregistrés ; les courbes affichent les pentes numériques. Ce drapeau utilise cinq validations et un seuil exploratoire de 10 %. Il n'arrête pas l'entraînement et ne certifie pas l'absence de surapprentissage. Le meilleur checkpoint minimise la LPIPS de validation ; les tests restent réservés à l'évaluation finale.
 '''
     if method == 'vqgan':
         common += '''
@@ -67,7 +68,7 @@ def section_plan(method: str) -> list[dict]:
               dict(name='Sélection et référence', open=False, charts=[
                   ('Validation et référence simple', ['validation/lpips', 'validation/baseline_lpips']),
                   ('Étape du meilleur checkpoint', ['selection/best_step']),
-                  ('Signal indicatif de surapprentissage', ['generalization/possible_overfit']),
+                  ('Tendance LPIPS : variation / 1 000 mises à jour', ['generalization/train_lpips_slope_per_1000', 'generalization/validation_lpips_slope_per_1000']),
               ])]
     return result
 

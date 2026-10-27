@@ -23,6 +23,19 @@ def test_main_workspace_is_small_and_detailed_groups_are_collapsed():
     assert all('codebook' not in key for section in section_plan('flow_uniform') for _, keys in section.get('charts', []) for key in keys)
 
 
+@pytest.mark.parametrize('method', ['vqgan', 'simvp', 'flow_uniform', 'flow_alpha'])
+def test_generalization_line_charts_use_numeric_trends_instead_of_boolean_flags(method):
+    plan = section_plan(method)
+    charts = [chart for section in plan for chart in section.get('charts', [])]
+    assert all('generalization/possible_overfit' not in keys for _, keys in charts)
+    slopes = ['generalization/train_lpips_slope_per_1000', 'generalization/validation_lpips_slope_per_1000']
+    title, = [title for title, keys in charts if keys == slopes]
+    assert '1 000' in title
+    guide = plan[0]['markdown'][0]
+    assert 'variation de LPIPS par 1 000 mises à jour' in guide
+    assert 'négative' in guide and 'positive' in guide
+
+
 def test_layout_preserves_run_selection_filters_and_original_spec():
     original = dict(section=dict(runSets=[dict(filters={'method': 'vqgan'}, selections=['active-run'])],
         customRunColors={'active-run': 'green'}, workspaceSettings={'linePlot': {'smoothing': 0}},
