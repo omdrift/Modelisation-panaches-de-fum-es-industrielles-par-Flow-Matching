@@ -26,7 +26,8 @@ from scientific.metrics import build_lpips, frame_metrics, diversity
 from scientific.monitoring import gpu_metrics, image_panel, error_panel, preserve_rng, record_metrics
 from scientific.diagnostics import reconstruction_snapshot, forecast_snapshot, export_snapshot, selection_details, plot_history
 from scientific.hyperparameters import autoencoder_settings, training_description
-from scientific.protocol import digest, file_hash, write_json, LEARNED, forecast_task, sources_compatible, _source_manifest
+from scientific.early_stopping import EarlyStopping, completion_valid
+from scientific.protocol import digest, file_hash, write_json, LEARNED, forecast_task, sources_compatible, _source_manifest, _protocols_compatible, _early_stopping_upgrade
 from training.checkpoints import capture_rng_state, restore_rng_state, save_checkpoint, load_checkpoint, atomic_save, copy_checkpoint, latest_checkpoint, CheckpointWriteError
 
 
@@ -65,6 +66,10 @@ def check_resume_provenance(previous, current, campaign=None):
     informational = {'command', 'commit', 'tracked_diff_sha256'}
     previous = {k: v for k, v in previous.items() if k not in informational}
     current = {k: v for k, v in current.items() if k not in informational}
+    if _protocols_compatible(previous.get('protocol_sha256'), current.get('protocol_sha256'), campaign):
+        for key in ('protocol_sha256', 'protocol'):
+            if key in current:
+                previous[key] = current[key]
     if ('source_sha256' in current and previous.get('source_sha256') != current['source_sha256']
             and sources_compatible(previous.get('source_sha256'), current['source_sha256'], campaign, current.get('protocol_sha256'))):
         previous['source_sha256'] = current['source_sha256']
@@ -91,7 +96,17 @@ def finalize_selection(run, status, step, planned_updates):
     if not path.exists():
         return
     state = torch.load(path, map_location='cpu', weights_only=True)
-    state['extra']['completion'] = dict(status=status, completed_updates=step, planned_updates=planned_updates)
+    completion = dict(status=status, completed_updates=step, planned_updates=planned_updates)
+    record = Path(run) / 'completion.json'
+    if record.is_file():
+        completion = json.loads(record.read_text())
+        if any(completion.get(key) != value for key, value in
+               [('status', status), ('completed_updates', step), ('planned_updates', planned_updates)]):
+            raise ValueError('Training completion record does not match the selected artifact')
+    if (state['extra'].get('completion') == completion and state['extra'].get('selected_artifact')
+            and state['extra'].get('selection_step') == state['step']):
+        return  # Preserve the selected artifact hash on a terminal resume.
+    state['extra']['completion'] = completion
     state['extra']['selected_artifact'] = True
     state['extra']['selection_step'] = state['step']
     atomic_save(state, path)
@@ -103,7 +118,8 @@ def validate_artifact(path, cfg, root, method):
     origin = extra.get('provenance', {})
     completion = extra.get('completion', {})
     allowed = ('complete',)
-    if (origin.get('method') != method or origin.get('protocol_sha256') != digest(cfg)
+    campaign = Path(path).parent.parent
+    if (origin.get('method') != method or not _protocols_compatible(origin.get('protocol_sha256'), digest(cfg), campaign)
             or origin.get('dataset_sha256') != file_hash(Path(root) / 'dataset_manifest.json')
             or completion.get('status') not in allowed or extra.get('best_validation_lpips') is None):
         raise ValueError('Artifact must be a selected, validated scientific checkpoint for this dataset/protocol')
@@ -113,9 +129,47 @@ def validate_artifact(path, cfg, root, method):
         raise ValueError('Unexpected common autoencoder seed')
     if not sources_compatible(origin.get('source_sha256'), provenance(cfg, root)['source_sha256'], Path(path).parent.parent, digest(cfg)):
         raise ValueError('Scientific sources changed since the checkpoint was produced')
-    if method != 'vqgan' and completion['completed_updates'] != completion['planned_updates']:
-        raise ValueError('Incomplete predictor training')
+    if not completion_valid(cfg, completion):
+        raise ValueError('Incomplete training or invalid early stopping proof')
+    if type(state['step']) is not int or not 1 <= state['step'] <= completion['completed_updates']:
+        raise ValueError('Selection step is outside the completed training')
     return state
+
+
+def _validation_due(step, last_validated, interval, total):
+    return step > last_validated and (step % interval == 0 or step == total)
+
+
+def _completion(step, total, stopper):
+    return dict(status='complete', completed_updates=step, planned_updates=total,
+                termination_reason='early_stopping' if stopper.stopped and step < total else 'max_updates',
+                early_stopping=stopper.state_dict())
+
+
+def _resume_stopper(cfg, extra, best_score, best_step, last_validated, campaign):
+    """Opt-in legacy resumes start fresh patience anchored to their saved best."""
+    saved = extra.get('early_stopping')
+    if saved is not None and not saved.get('settings', {}).get('enabled'):
+        receipt = _early_stopping_upgrade(campaign)
+        if receipt is not None and receipt['after_protocol'] == cfg:
+            saved = None
+    stopper = EarlyStopping(cfg, saved)
+    if saved is None and best_score is not None and last_validated > 0:
+        state = stopper.state_dict()
+        state.update(best_score=best_score, best_step=best_step or last_validated, last_step=last_validated)
+        stopper = EarlyStopping(cfg, state)
+    return stopper
+
+
+def _terminal_resume(run, cfg, root, method, step, stopper):
+    """A validated finished run is immutable, including after a policy opt-in."""
+    if not (step == cfg['training']['max_updates'] or stopper.stopped) or not (run / 'run.json').is_file():
+        return False
+    record = json.loads((run / 'run.json').read_text())
+    if record.get('status') != 'complete' or record.get('completed_updates') != step:
+        return False
+    state = validate_artifact(run / 'best.pth', cfg, root, method)
+    return state is not None and state['extra']['completion']['completed_updates'] == step
 
 
 def predict(model, method, context, cfg, generator=None):
@@ -235,7 +289,7 @@ def profile(cfg, output, device):
 def train_predictor(cfg, root, method, seed, ae_path, pilot_path, run, device, resume=None, monitor=None):
     forecast_task(cfg)
     pilot = json.loads(Path(pilot_path).read_text())
-    if pilot['provenance']['protocol_sha256'] != digest(cfg):
+    if not _protocols_compatible(pilot['provenance']['protocol_sha256'], digest(cfg), Path(pilot_path).parent):
         raise ValueError('Pilot belongs to a different protocol')
     current = provenance(cfg)
     if (not sources_compatible(pilot['provenance']['source_sha256'], current['source_sha256'], Path(pilot_path).parent, digest(cfg))
@@ -270,6 +324,9 @@ def train_predictor(cfg, root, method, seed, ae_path, pilot_path, run, device, r
     elif (run / 'run.json').exists():
         raise FileExistsError('Existing run: use --resume explicitly')
     best_step, best_diagnostics = selection_details(run, extra['best_validation_lpips'])
+    stopper = _resume_stopper(cfg, extra, extra['best_validation_lpips'], best_step, extra.get('last_validated_step', 0), run.parent)
+    if resume and _terminal_resume(run, cfg, root, method, step, stopper):
+        return
     write_json(run / 'effective_training.json', training_description(cfg, method))
     write_json(run / 'run.json', metadata | {'status': 'running'})
     total = cfg['training']['max_updates']
@@ -277,9 +334,10 @@ def train_predictor(cfg, root, method, seed, ae_path, pilot_path, run, device, r
     status = 'incomplete'
     try:
         model.train()
-        while step < total or extra.get('last_validated_step', 0) < total:
+        while not stopper.stopped and (step < total or extra.get('last_validated_step', 0) < total):
             ratios = []
-            if step < total:
+            interval = cfg['training']['validation_every']
+            if step < total and not _validation_due(step, extra.get('last_validated_step', 0), interval, total):
                 report = step + 1 == total or (monitor.should_log(step + 1) if monitor else (step + 1) % 25 == 0)
                 start_time = time.monotonic()
                 update_losses = []
@@ -303,17 +361,20 @@ def train_predictor(cfg, root, method, seed, ae_path, pilot_path, run, device, r
                     record_metrics(run, step, {'train/loss': torch.stack(update_losses).mean(), 'train/lr': scheduler.get_last_lr()[0], 'train/gradient_norm_before_clip': gradient_norm,
                         'progress/updates': step, 'progress/total_updates': total, 'performance/update_seconds': time.monotonic() - start_time,
                         **gpu_metrics(device)}, monitor)
-            if step % cfg['training']['validation_every'] == 0 or step == total:
+            if _validation_due(step, extra.get('last_validated_step', 0), interval, total):
                 val_snapshot = validation_score(model, method, validation, metric, cfg, device, return_snapshot=True)
                 train_snapshot = forecast_snapshot(model, training, metric, cfg, device,
                     lambda context, generator: predict(model, method, context, cfg, generator)[0], train_panel=True)
                 score = val_snapshot.score
+                candidate_stopper = EarlyStopping(cfg, stopper.state_dict())
+                candidate_stopper.observe(score, step, eligible=step >= cfg['training']['warmup_updates'])
                 improved = extra['best_validation_lpips'] is None or score < extra['best_validation_lpips']
                 if improved:
                     best_step = step
                     best_diagnostics = dict(step=step, train_eval=train_snapshot.summary(), validation=val_snapshot.summary())
                 diagnostic_values = export_snapshot(run, step, method, train_snapshot, val_snapshot,
                     score if improved else extra['best_validation_lpips'], best_step, metadata)
+                diagnostic_values.update(candidate_stopper.metrics())
                 images = None
                 if monitor is not None and monitor.should_media(step, step == total):
                     with preserve_rng(), torch.inference_mode():
@@ -331,6 +392,8 @@ def train_predictor(cfg, root, method, seed, ae_path, pilot_path, run, device, r
                         'Columns: true future RGB, prediction, absolute error, estimated smoke mask')
                 record_metrics(run, step, diagnostic_values, monitor, images)
                 extra['last_validated_step'] = step
+                stopper = candidate_stopper
+                extra['early_stopping'] = stopper.state_dict()
                 if improved:
                     extra['best_validation_lpips'] = score
                     extra['best_diagnostics'] = best_diagnostics
@@ -342,20 +405,22 @@ def train_predictor(cfg, root, method, seed, ae_path, pilot_path, run, device, r
                 extra['latent_mask_fraction'] = float(np.mean(ratios)) if ratios else None
                 save_checkpoint(model, optimizer, scheduler, run, step, extra)
                 print(json.dumps(dict(method=method, seed=seed, step=step, validation_lpips=score)), flush=True)
-        status = 'complete'
         plot_history(run)
+        status = 'complete'
     finally:
         try:
             if not isinstance(sys.exc_info()[1], CheckpointWriteError):
                 save_checkpoint(model, optimizer, scheduler, run, step, extra)
                 if status == 'complete':
+                    write_json(run / 'completion.json', _completion(step, total, stopper))
                     finalize_selection(run, status, step, total)
-        except CheckpointWriteError:
+        except BaseException:
             status = 'incomplete'
             raise
         finally:
             final = latest_checkpoint(run)
-            write_json(run / 'run.json', metadata | dict(status=status, completed_updates=step, planned_updates=total, last_checkpoint=str(final) if final else None, best_validation_lpips=extra['best_validation_lpips']))
+            completion = _completion(step, total, stopper) if status == 'complete' else {}
+            write_json(run / 'run.json', metadata | completion | dict(status=status, completed_updates=step, planned_updates=total, last_checkpoint=str(final) if final else None, best_validation_lpips=extra['best_validation_lpips']))
 
 
 def train_autoencoder(cfg, root, run, device, resume=None, monitor=None):
@@ -380,6 +445,7 @@ def train_autoencoder(cfg, root, run, device, resume=None, monitor=None):
     step, best, status = 0, None, 'incomplete'
     last_validated_step = 0
     pending_best = False
+    stopper = EarlyStopping(cfg)
     if resume:
         state = torch.load(resume, map_location=device, weights_only=True)
         check_resume_provenance(state['extra']['provenance'], metadata, run.parent)
@@ -393,12 +459,18 @@ def train_autoencoder(cfg, root, run, device, resume=None, monitor=None):
     elif (run / 'run.json').exists():
         raise FileExistsError('Existing autoencoder run; use --resume')
     best_step, best_diagnostics = selection_details(run, best)
+    if resume:
+        stopper = _resume_stopper(cfg, state['extra'], best, best_step, last_validated_step, run.parent)
+        if _terminal_resume(run, cfg, root, 'vqgan', step, stopper):
+            return
     write_json(run / 'effective_training.json', training_description(cfg, 'vqgan'))
     write_json(run / 'run.json', metadata | dict(status='running'))
     print(json.dumps(dict(method='vqgan', step=step, total_updates=cfg['training']['max_updates'], status='training')), flush=True)
     try:
-        while step < cfg['training']['max_updates'] or last_validated_step < cfg['training']['max_updates']:
-            if step < cfg['training']['max_updates']:
+        total = cfg['training']['max_updates']
+        while not stopper.stopped and (step < total or last_validated_step < total):
+            interval = settings['validation_every']
+            if step < total and not _validation_due(step, last_validated_step, interval, total):
                 report = step + 1 == cfg['training']['max_updates'] or (monitor.should_log(step + 1) if monitor else (step + 1) % 25 == 0)
                 start_time = time.monotonic()
                 scalars = {key: [] for key in ('generator', 'reconstruction', 'perceptual', 'vq', 'adversarial', 'discriminator')}
@@ -449,16 +521,19 @@ def train_autoencoder(cfg, root, run, device, resume=None, monitor=None):
                         'train/discriminator_active': step > cfg['training']['discriminator_start'], 'progress/updates': step,
                         'progress/total_updates': cfg['training']['max_updates'], 'performance/update_seconds': time.monotonic() - start_time, **gpu_metrics(device)})
                     record_metrics(run, step, values, monitor)
-            if step % settings['validation_every'] == 0 or step == cfg['training']['max_updates']:
+            if _validation_due(step, last_validated_step, interval, total):
                 val_snapshot = reconstruction_snapshot(model, validation, metric, cfg, device)
                 train_snapshot = reconstruction_snapshot(model, training, metric, cfg, device, train_panel=True)
                 show_images = monitor is not None and monitor.should_media(step, step == cfg['training']['max_updates'])
                 score = val_snapshot.score
+                candidate_stopper = EarlyStopping(cfg, stopper.state_dict())
+                candidate_stopper.observe(score, step, eligible=step > cfg['training']['discriminator_start'])
                 improved = best is None or score < best
                 candidate_best = score if improved else best
                 candidate_step = step if improved else best_step
                 candidate_diagnostics = dict(step=step, train_eval=train_snapshot.summary(), validation=val_snapshot.summary()) if improved else best_diagnostics
                 diagnostic_values = export_snapshot(run, step, 'vqgan', train_snapshot, val_snapshot, candidate_best, candidate_step, metadata)
+                diagnostic_values.update(candidate_stopper.metrics())
                 images = None
                 if show_images:
                     images = {'validation/reconstructions': (image_panel(torch.stack(val_snapshot.real), torch.stack(val_snapshot.reconstructed)), 'Left: true RGB; right: reconstruction; fixed validation samples'),
@@ -466,28 +541,31 @@ def train_autoencoder(cfg, root, run, device, resume=None, monitor=None):
                         'train_eval/reconstructions': (image_panel(torch.stack(train_snapshot.real), torch.stack(train_snapshot.reconstructed)), 'Fixed training diagnostic samples; model in eval mode')}
                 record_metrics(run, step, diagnostic_values, monitor, images)
                 last_validated_step = step
+                stopper = candidate_stopper
                 best, best_step, best_diagnostics = candidate_best, candidate_step, candidate_diagnostics
                 pending_best = improved
-                extra = dict(provenance=metadata, best_validation_lpips=best, best_diagnostics=best_diagnostics, last_validated_step=last_validated_step, best_checkpoint_pending=pending_best, discriminator=discriminator.state_dict(), optimizer_d=optimizer_d.state_dict())
+                extra = dict(provenance=metadata, best_validation_lpips=best, best_diagnostics=best_diagnostics, last_validated_step=last_validated_step, best_checkpoint_pending=pending_best, discriminator=discriminator.state_dict(), optimizer_d=optimizer_d.state_dict(), early_stopping=stopper.state_dict())
                 path = save_checkpoint(model, optimizer, scheduler, run, step, extra)
                 if improved:
                     copy_checkpoint(path, run / 'best.pth')
                     pending_best = False
-        status = 'complete'
         plot_history(run)
+        status = 'complete'
     finally:
-        extra = dict(provenance=metadata, best_validation_lpips=best, best_diagnostics=best_diagnostics, last_validated_step=last_validated_step, best_checkpoint_pending=pending_best, discriminator=discriminator.state_dict(), optimizer_d=optimizer_d.state_dict())
+        extra = dict(provenance=metadata, best_validation_lpips=best, best_diagnostics=best_diagnostics, last_validated_step=last_validated_step, best_checkpoint_pending=pending_best, discriminator=discriminator.state_dict(), optimizer_d=optimizer_d.state_dict(), early_stopping=stopper.state_dict())
         try:
             if not isinstance(sys.exc_info()[1], CheckpointWriteError):
                 save_checkpoint(model, optimizer, scheduler, run, step, extra)
                 if status == 'complete':
+                    write_json(run / 'completion.json', _completion(step, cfg['training']['max_updates'], stopper))
                     finalize_selection(run, status, step, cfg['training']['max_updates'])
-        except CheckpointWriteError:
+        except BaseException:
             status = 'incomplete'
             raise
         finally:
             final = latest_checkpoint(run)
-            write_json(run / 'run.json', metadata | dict(status=status, completed_updates=step, best_validation_lpips=best, last_checkpoint=str(final) if final else None))
+            completion = _completion(step, cfg['training']['max_updates'], stopper) if status == 'complete' else {}
+            write_json(run / 'run.json', metadata | completion | dict(status=status, completed_updates=step, best_validation_lpips=best, last_checkpoint=str(final) if final else None))
 
 
 @preserve_rng()
@@ -510,7 +588,7 @@ def inspect_autoencoder(cfg, root, campaign, checkpoint, device, output=None):
         raise RuntimeError('Checkpoint changed during inspection; rerun with a stable checkpoint')
     origin = state['extra']['provenance']
     if (origin.get('method') != 'vqgan' or origin.get('seed') != cfg['training']['autoencoder_seed']
-            or origin.get('protocol_sha256') != digest(cfg)
+            or not _protocols_compatible(origin.get('protocol_sha256'), digest(cfg), campaign)
             or origin.get('dataset_sha256') != file_hash(root / 'dataset_manifest.json')
             or not sources_compatible(origin.get('source_sha256'), provenance(cfg, root)['source_sha256'], campaign, digest(cfg))):
         raise ValueError('Inspection requires a matching VQGAN checkpoint, dataset, protocol and source')
@@ -548,7 +626,7 @@ def evaluate(cfg, root, method, seed, checkpoint, autoencoder, split, output, de
             validate_artifact(autoencoder, cfg, root, 'vqgan')
         model = model_for(cfg, method, autoencoder).to(device).eval()
         expected = state['extra']['provenance']
-        if expected['method'] != method or expected['seed'] != seed or expected['protocol_sha256'] != digest(cfg) or expected['dataset_sha256'] != file_hash(Path(root) / 'dataset_manifest.json'):
+        if expected['method'] != method or expected['seed'] != seed or not _protocols_compatible(expected['protocol_sha256'], digest(cfg), Path(checkpoint).parent.parent) or expected['dataset_sha256'] != file_hash(Path(root) / 'dataset_manifest.json'):
             raise ValueError('Checkpoint identity does not match this evaluation')
         if method.startswith('flow') and expected['autoencoder_sha256'] != file_hash(autoencoder):
             raise ValueError('Autoencoder differs from the training artifact')

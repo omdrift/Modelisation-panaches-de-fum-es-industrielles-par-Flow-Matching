@@ -44,6 +44,8 @@ def prepare_study(cfg, data, output, learning_rates, updates):
     for index, rate in enumerate(learning_rates):
         candidate = copy.deepcopy(cfg)
         candidate['training']['max_updates'] = updates
+        if 'early_stopping' in candidate['training']:
+            candidate['training']['early_stopping']['enabled'] = False
         candidate['training']['autoencoder'] = settings | dict(learning_rate=rate, discriminator_learning_rate=rate)
         path = output / f'candidate_{index + 1}.yaml'
         protocols.append((path, yaml.safe_dump(candidate, sort_keys=False)))

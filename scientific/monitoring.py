@@ -72,6 +72,7 @@ class WandbMonitor:
                     name=self.options.name or f'{self.directory.parent.name}-{self.method}-{self.seed}',
                     group=self.options.group or self.directory.parent.name, job_type=self.method,
                     mode=self.options.mode, resume='allow' if self.options.mode == 'online' else None,
+                    allow_val_change=self.resume,
                     dir=str(session), config=configuration,
                     save_code=False,
                     settings=wandb.Settings(disable_code=True, disable_git=True, disable_job_creation=True, console='off', init_timeout=30),
@@ -85,7 +86,7 @@ class WandbMonitor:
                 for name in ('train_eval/lpips', 'validation/lpips', 'validation/smoke_mse',
                              'validation/background_mse', 'validation/errors_and_masks',
                              'generalization/lpips_gap', 'validation/codebook/perplexity',
-                             'validation/codebook/used_fraction'):
+                             'validation/codebook/used_fraction', 'early_stopping/bad_checks'):
                     self.run.define_metric(name, step_metric='global_step', hidden=False)
                 self.identity = dict(id=run_id, project=self.options.project, entity=self.run.entity,
                                      mode=self.options.mode, directory=str(session), url=self.run.url if self.options.mode == 'online' else None,

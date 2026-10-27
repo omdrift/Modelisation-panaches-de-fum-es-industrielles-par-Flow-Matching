@@ -1,4 +1,5 @@
 """Diagnostics must explain model quality without changing training state."""
+import copy
 import json
 import random
 
@@ -131,15 +132,23 @@ def test_possible_overfit_requires_a_full_advisory_trend(tmp_path):
 
 
 @pytest.mark.parametrize('replace_checkpoint', [False, True])
-def test_autoencoder_inspection_never_loads_test_splits(tmp_path, monkeypatch, replace_checkpoint):
+@pytest.mark.parametrize('upgraded', [False, True])
+def test_autoencoder_inspection_never_loads_test_splits(tmp_path, monkeypatch, replace_checkpoint, upgraded):
     from scientific import runner
     from scientific import protocol
     cfg = load_protocol()
+    previous = copy.deepcopy(cfg)
+    previous['training'].pop('early_stopping')
+    old_sources, new_sources = {'scientific/runner.py': 'before'}, {'scientific/runner.py': 'after'}
+    if upgraded:
+        protocol.write_json(tmp_path / 'maintenance.json', dict(kind='validation_early_stopping',
+            before_protocol=previous, after_protocol=cfg, protocol_sha256=protocol.digest(cfg),
+            before_sources=old_sources, after_sources=new_sources))
     data = tmp_path / 'data'
     data.mkdir()
     (data / 'dataset_manifest.json').write_text('{}')
-    origin = dict(method='vqgan', seed=42, protocol_sha256=protocol.digest(cfg),
-                  dataset_sha256=protocol.file_hash(data / 'dataset_manifest.json'), source_sha256='source')
+    origin = dict(method='vqgan', seed=42, protocol_sha256=protocol.digest(previous if upgraded else cfg),
+                  dataset_sha256=protocol.file_hash(data / 'dataset_manifest.json'), source_sha256=protocol.digest(old_sources))
     checkpoint = tmp_path / 'best.pth'
     torch.save(dict(step=7, model=TinyAE().state_dict(), extra={'provenance': origin}), checkpoint)
     splits = []
@@ -151,7 +160,7 @@ def test_autoencoder_inspection_never_loads_test_splits(tmp_path, monkeypatch, r
 
     monkeypatch.setattr(protocol, 'validate_prepared_data', lambda *a: None)
     monkeypatch.setattr(runner, 'WindowDataset', dataset)
-    monkeypatch.setattr(runner, 'provenance', lambda *a: {'source_sha256': 'source'})
+    monkeypatch.setattr(runner, 'provenance', lambda *a: {'source_sha256': protocol.digest(new_sources if upgraded else old_sources)})
     monkeypatch.setattr(runner, 'build_vqvae', lambda *a: TinyAE())
     monkeypatch.setattr(runner, 'build_lpips', lambda *a: Perceptual())
     output = tmp_path / 'inspection'

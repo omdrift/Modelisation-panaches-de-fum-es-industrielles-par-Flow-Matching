@@ -42,6 +42,8 @@ python tools/plan_calibration.py \
 
 Les 15 000 mises à jour sont une durée d'exposition exploratoire déclarée, incluant la phase adversariale ; elles ne prouvent pas une convergence. Chaque candidat voit 240 000 tirages d'images avec remise selon le même calendrier déterministe. Ce nombre ne mesure ni les images uniques ni des époques complètes.
 
+Le générateur de calibration désactive explicitement l'arrêt anticipé pour ces candidats : leur exposition doit rester identique. Cette exception au protocole de campagne est enregistrée dans chaque YAML et dans ses réglages effectifs.
+
 Les sorties sont `candidate_*.yaml`, `study.json` et `commands.sh`. Le plan enregistre les empreintes du dataset, des sources et du générateur de plan, ainsi que l'interpréteur et les versions des principales dépendances. Les commandes utilisent cet interpréteur. Comparer ces identités avec la provenance des runs avant analyse ; le script de lancement ne verrouille pas le système de fichiers ni l'environnement entre-temps. Chaque candidat possède son propre dossier de campagne et son propre run W&B. L'exécution, lorsqu'elle est décidée, est séquentielle :
 
 ```bash
@@ -87,6 +89,26 @@ Les colonnes visuelles sont RGB réel, reconstruction/prédiction, erreur absolu
 
 ## Surapprentissage et sélection
 
+### Arrêt sur plateau de validation
+
+La campagne de référence utilise la même politique pour le VQGAN, SimVP et les deux variantes Flow Matching :
+
+```yaml
+training:
+  max_updates: 100000
+  early_stopping:
+    enabled: true
+    patience: 10
+    min_delta: 0.0001
+    min_updates: 5000
+```
+
+La patience compte des validations, pas des mises à jour. Avant 5 000 mises à jour, le compteur reste nul ; il reste également nul avant la fin de l'échauffement des prédicteurs et avant l'activation du discriminateur VQGAN. Une amélioration doit dépasser strictement 0,0001 LPIPS par rapport à la dernière amélioration significative. De petits gains peuvent s'accumuler contre cette référence. Une égalité ne réinitialise pas le compteur. Ces seuils sont exploratoires, sans garantie statistique de convergence.
+
+La sélection de `best.pth` conserve le plus faible LPIPS brut, même si le gain est inférieur à `min_delta`. À dix validations sans amélioration significative, l'état et la décision sont sauvegardés, le run est terminé avec succès et la pipeline poursuit avec ce meilleur checkpoint. Les intervalles de validation étant 250 pour VQGAN et 1 000 pour les prédicteurs, une même patience ne représente pas le même nombre de mises à jour. Les expositions réelles et les motifs d'arrêt doivent figurer dans les comparaisons.
+
+`early_stopping/bad_checks` et `early_stopping/patience` partagent un graphique ; le premier atteint le second au déclenchement. Les fichiers `completion.json`, `run.json` et le checkpoint sélectionné conservent le motif `early_stopping` ou `max_updates`, le nombre réel de mises à jour et la politique. Les RNG, les compteurs et les validations en attente sont repris depuis le checkpoint. Une reprise déjà terminale ne réécrit pas les artefacts validés. Le test réservé n'intervient jamais dans la décision.
+
 Le meilleur checkpoint minimise la LPIPS de validation observée. Cette règle ne démontre ni l'absence de surapprentissage ni une supériorité sur un autre modèle. Si la validation se dégrade après son minimum, le checkpoint antérieur peut rester pertinent ; si le panel de validation lui-même a guidé de nombreuses décisions, il peut être surajusté.
 
 Le drapeau `generalization/possible_overfit` est une **heuristique non calibrée** : cinq validations, pente train négative, pente validation positive et validation courante supérieure de plus de 10 % au meilleur score. Il ne déclenche aucun arrêt et ne constitue pas un test statistique. Son absence ne prouve pas l'absence de surapprentissage.
@@ -98,5 +120,7 @@ Après gel des décisions, l'évaluation finale utilise les tests par dates et p
 ## Reprise et traçabilité
 
 Une campagne conserve sa copie `protocol.yaml`. Pour reprendre une campagne créée avec une autre configuration de référence, spécifier explicitement `--protocol <campagne>/protocol.yaml` ; une modification du fichier de référence n'autorise pas un changement d'hyperparamètres à la reprise. Les protocoles figés sans bloc `training.autoencoder` résolvent la recette initiale exacte.
+
+Un protocole sans `training.early_stopping` reste désactivé. L'adoption explicite sur une campagne ancienne arrêtée utilise `tools/enable_early_stopping.py`, avec l'instantané des sources correspondant à son empreinte, avant de reprendre. L'outil conserve les configurations avant/après et les manifestes de sources dans `maintenance.json`, n'autorise que cette politique et refuse les campagnes actives ou déjà évaluées sur test. Les tenseurs et états d'optimiseur ne sont pas réécrits. La patience commence à la reprise, ancrée sur le meilleur LPIPS enregistré ; aucun arrêt n'est appliqué rétroactivement.
 
 Changer un LR, une pondération ou l'architecture nécessite un nouveau dossier d'expérience. `effective_training.json` décrit les réglages exécutés ; il ne remplace pas le protocole, les états d'optimiseur ou les empreintes des artefacts. Les deux derniers checkpoints de reprise et `best.pth` sont conservés par rotation atomique.

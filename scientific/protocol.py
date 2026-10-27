@@ -1,6 +1,7 @@
 """Protocol validation, metadata partitioning and immutable experiment identities."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -15,6 +16,9 @@ VAL_VIEWS = {(0, v) for v in (4, 9, 13)}
 TEST_VIEWS = {(0, v) for v in (1, 5, 7, 11)} | {(1, 0), (2, 0), (2, 1), (2, 2)}
 METHODS = ('persistence', 'optical_flow', 'simvp', 'flow_uniform', 'flow_alpha')
 LEARNED = METHODS[2:]
+_EARLY_STOPPING_FILES = {'scientific/early_stopping.py', 'scientific/runner.py', 'scientific/protocol.py',
+                         'scientific/hyperparameters.py', 'scientific/monitoring.py', 'scientific/pipeline.py',
+                         'scientific/cli.py'}
 
 
 def digest(value) -> str:
@@ -40,10 +44,11 @@ def _source_manifest(root=Path('.')) -> dict[str, str]:
 
 
 def sources_compatible(previous, current, campaign=None, protocol_sha256=None) -> bool:
-    """Accept identical code or one explicitly recorded campaign maintenance patch.
+    """Accept identical code or one explicitly recorded campaign transition.
 
     A receipt binds the full before/after file manifests and the frozen protocol.
-    It never relaxes data, model, seed, optimizer or runtime checks.
+    The early-stopping opt-in may only add that policy. Data, model, seed,
+    optimizer and runtime identities remain checked independently.
     """
     if previous == current:
         return True
@@ -53,10 +58,55 @@ def sources_compatible(previous, current, campaign=None, protocol_sha256=None) -
     if not path.is_file():
         return False
     receipt = json.loads(path.read_text())
+    if receipt.get('kind') == 'validation_early_stopping':
+        upgrade = _early_stopping_upgrade(campaign)
+        return (upgrade is not None and upgrade['protocol_sha256'] == protocol_sha256
+                and digest(upgrade['before_sources']) == previous and digest(upgrade['after_sources']) == current)
     return (receipt.get('kind') in ('checkpoint_io_and_resume_checks', 'observational_monitoring_and_checkpoint_io')
             and receipt.get('protocol_sha256') == protocol_sha256
             and any(digest(sources) == previous for sources in [receipt.get('before_sources', {}), *receipt.get('intermediate_sources', [])])
             and digest(receipt.get('after_sources', {})) == current)
+
+
+def _early_stopping_upgrade(campaign):
+    """Validate a narrowly scoped, explicit change to an existing campaign."""
+    if campaign is None or not (Path(campaign) / 'maintenance.json').is_file():
+        return None
+    receipt = json.loads((Path(campaign) / 'maintenance.json').read_text())
+    if receipt.get('kind') != 'validation_early_stopping':
+        return None
+    try:
+        before, after = receipt['before_protocol'], receipt['after_protocol']
+        expected = copy.deepcopy(before)
+        expected['training']['early_stopping'] = after['training']['early_stopping']
+        from scientific.early_stopping import settings
+        if settings(before)['enabled'] or not settings(after)['enabled'] or expected != after:
+            return None
+        if digest(after) != receipt['protocol_sha256']:
+            return None
+        old_sources, new_sources = receipt['before_sources'], receipt['after_sources']
+        changed = {name for name in old_sources.keys() | new_sources.keys() if old_sources.get(name) != new_sources.get(name)}
+        if changed - _EARLY_STOPPING_FILES:
+            return None
+        old_identity = receipt.get('before_pipeline_identity')
+        new_identity = receipt.get('after_pipeline_identity')
+        if old_identity is None:
+            if new_identity is not None:
+                return None
+        elif (old_identity.get('protocol_sha256') != digest(before)
+                or new_identity != old_identity | dict(protocol_sha256=digest(after), source_sha256=digest(new_sources))):
+            return None
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+    return receipt
+
+
+def _protocols_compatible(previous, current, campaign=None):
+    if previous == current:
+        return True
+    receipt = _early_stopping_upgrade(campaign)
+    return (receipt is not None and digest(receipt['before_protocol']) == previous
+            and receipt['protocol_sha256'] == current)
 
 
 def write_json(path, value) -> None:
@@ -86,6 +136,8 @@ def load_protocol(path='configs/scientific_protocol.yaml') -> dict:
     validate_settings(cfg['preprocessing'])
     from scientific.hyperparameters import autoencoder_settings
     autoencoder_settings(cfg)
+    from scientific.early_stopping import settings as early_stopping_settings
+    early_stopping_settings(cfg)
     if cfg['seeds'] != [17, 42, 2026]:
         raise ValueError('Protocol v1 fixes the predictor seeds')
     if cfg['evaluation']['realizations'] != 4 or cfg['evaluation']['ode_grid_points'] < 2:

@@ -25,6 +25,11 @@ selection:
 training:
   effective_batch_size: 16
   max_updates: 100000
+  early_stopping:
+    enabled: true
+    patience: 10
+    min_delta: 0.0001
+    min_updates: 5000
   validation_every: 1000
   learning_rate: 0.0001
   weight_decay: 0.000005

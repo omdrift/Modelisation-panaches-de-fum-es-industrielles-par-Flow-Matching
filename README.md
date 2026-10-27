@@ -6,7 +6,7 @@ The reference experiment retains all **36 consecutive frames** of every source c
 
 The comparison contains persistence, Farnebäck optical-flow extrapolation, compact SimVP, uniform Flow Matching, and alpha-weighted Flow Matching. No physical concentration, emissions or validated three-dimensional plume dynamics are inferred from the RGB experiment.
 
-The implementation provides dataset checks, sequential orchestration, checkpoint recovery, fixed-panel diagnostics and held-out evaluation. The protocol and software are available; consolidated forecasting results and a calibrated optimal learning rate have not been established.
+The implementation provides dataset checks, sequential orchestration, validation-based early stopping, checkpoint recovery, fixed-panel diagnostics and held-out evaluation. The protocol and software are available; consolidated forecasting results and a calibrated optimal learning rate have not been established.
 
 ```mermaid
 flowchart LR
@@ -55,6 +55,8 @@ python -m scientific.cli \
 
 The reference pipeline contains 45 ordered stages.
 
+VQGAN and every learned predictor stop after ten validation checks without a significant LPIPS decrease (`min_delta: 0.0001`), with patience counting from 5,000 updates and after their initial warmup/adversarial activation. The maximum remains 100,000 updates. `best.pth` always keeps the lowest raw validation LPIPS, and the pipeline continues after a clean early stop. The policy is explicit in `training.early_stopping`; its defaults are exploratory. Existing frozen protocols without this block remain unchanged. The [runbook](doc/SCIENTIFIC_RUNBOOK.md#early-stopping-and-existing-campaigns) describes the explicit opt-in for an interrupted older campaign.
+
 When a completed prepared dataset already exists, the pipeline reuses it and verifies its NPZ files, masks and manifests before training. Source MP4s and the CLIPSeg cache are not needed for this path. `--videos` is optional (default `smoke_videos`) and is used only when data preparation is needed:
 
 ```bash
@@ -77,7 +79,7 @@ After an interruption, the same campaign can be resumed with `--resume`. Use `--
 
 WandB monitoring is optional. Online runs require `python -m wandb login`; `--wandb-mode offline` stores local tracking data. Scalar metrics are also written to each run's `metrics.jsonl`.
 
-Monitoring compares fixed training and validation panels, smoke/background errors, trivial baselines, date/view slices and VQ codebook utilization. The W&B workspace includes an interpretation card, six main VQGAN charts and fixed error/mask images; detailed analyses stay collapsed. Counters stay in the recorded reports. `tools/configure_wandb.py` creates or updates a stable named workspace without restarting training; setup is in the [runbook](doc/SCIENTIFIC_RUNBOOK.md#monitoring-and-recovery). A five-validation trend flag is advisory and does not prove overfitting or change checkpoint selection. Saved VQGAN checkpoints can be inspected with `inspect-autoencoder`. Each learned run exports `effective_training.json`, separating the VQGAN recipe from predictor settings.
+Monitoring compares fixed training and validation panels, smoke/background errors, trivial baselines, date/view slices and VQ codebook utilization. The W&B workspace includes an interpretation card, seven main VQGAN charts including patience against its threshold and fixed error/mask images; detailed analyses stay collapsed. Counters stay in the recorded reports. `tools/configure_wandb.py` creates or updates a stable named workspace without restarting training; setup is in the [runbook](doc/SCIENTIFIC_RUNBOOK.md#monitoring-and-recovery). A five-validation trend flag is advisory and does not prove overfitting or change checkpoint selection. Saved VQGAN checkpoints can be inspected with `inspect-autoencoder`. Each learned run exports `effective_training.json`, separating the VQGAN recipe from predictor settings.
 
 ## Data preparation
 

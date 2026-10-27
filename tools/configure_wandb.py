@@ -20,6 +20,7 @@ Chaque point de qualité utilise les mêmes exemples fixes, en mode évaluation.
 | La qualité progresse-t-elle ? | **LPIPS ↓** mesure l'écart perceptuel. Comparer apprentissage et validation ; aucune valeur ne garantit à elle seule un bon modèle. |
 | La fumée est-elle conservée ? | **MSE fumée ↓**, sur RGB dans [0,1], complète la MSE du fond. Les masques sont estimés ; une région absente est exclue, pas comptée comme erreur nulle. |
 | Le modèle généralise-t-il ? | **Écart LPIPS = validation − apprentissage**. Une hausse durable de validation avec baisse en apprentissage est un signal à examiner, pas une preuve automatique. Les dates et les vues peuvent différer. |
+| Quand l'entraînement s'arrête-t-il ? | Si activée, la **patience** compte les validations sans baisse significative de LPIPS. L'arrêt intervient lorsque le compteur atteint le seuil, après le minimum de mises à jour et la phase initiale ; les valeurs effectives figurent dans la configuration du run. |
 | Que regarder visuellement ? | Les images fixes montrent RGB réel, reconstruction/prédiction, erreur et masque estimé. Vérifier disparition, artefacts de fond et contours. |
 
 Le drapeau « surapprentissage » utilise cinq validations et un seuil exploratoire de 10 %. Il n'arrête pas l'entraînement et ne certifie pas l'absence de surapprentissage. Le meilleur checkpoint minimise la LPIPS de validation ; les tests restent réservés à l'évaluation finale.
@@ -48,6 +49,7 @@ def section_plan(method: str) -> list[dict]:
             ('Perplexité du codebook', ['validation/codebook/perplexity', 'validation/smoke_codebook/perplexity']),
             ('Fraction des codes utilisés', ['validation/codebook/used_fraction', 'validation/smoke_codebook/used_fraction']),
         ])
+    quality.append(('Patience : validations sans progrès / seuil', ['early_stopping/bad_checks', 'early_stopping/patience']))
     optimization = [('Pertes de reconstruction', ['train/reconstruction', 'train/perceptual']),
                     ('Quantification et discriminateur', ['train/vq', 'train/discriminator'])] if method == 'vqgan' else [
                     ('Objectif du prédicteur', ['train/loss'])]

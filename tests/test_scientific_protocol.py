@@ -336,6 +336,7 @@ def test_completion_proof_is_bound_to_selected_step(tmp_path, monkeypatch):
     from scientific import runner
     from scientific.protocol import digest, file_hash
     cfg = load_protocol()
+    cfg['training']['max_updates'] = 10
     (tmp_path / 'dataset_manifest.json').write_text('{}')
     monkeypatch.setattr(runner, 'provenance', lambda cfg, root=None: {'source_sha256': 'source'})
     state = {'step': 5, 'model': {}, 'extra': {'provenance': {'method': 'simvp', 'protocol_sha256': digest(cfg), 'dataset_sha256': file_hash(tmp_path / 'dataset_manifest.json'), 'source_sha256': 'source'}, 'best_validation_lpips': 0.2, 'selected_artifact': True, 'selection_step': 4, 'completion': {'status': 'complete', 'completed_updates': 10, 'planned_updates': 10}}}
