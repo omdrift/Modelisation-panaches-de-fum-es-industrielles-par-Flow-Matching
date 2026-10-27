@@ -106,3 +106,19 @@ def test_receipt_cannot_authorize_a_learning_rate_change(old_campaign):
     receipt['protocol_sha256'] = digest(receipt['after_protocol'])
     write_json(campaign / 'maintenance.json', receipt)
     assert not sources_compatible(origin['source_sha256'], digest(_source_manifest(current)), campaign, receipt['protocol_sha256'])
+
+
+@pytest.mark.parametrize('field,value', [('data', 'other_dataset'), ('methods', ['other_model']), ('seeds', [999])])
+def test_retry_cannot_change_unrelated_pipeline_identity(old_campaign, field, value):
+    from tools.enable_early_stopping import enable
+    _, campaign, before, current, _ = old_campaign
+    enable(campaign, before, source_root=current)
+    receipt = json.loads((campaign / 'maintenance.json').read_text())
+    state = json.loads((campaign / 'pipeline.json').read_text())
+    state['identity'] = receipt['before_pipeline_identity']
+    write_json(campaign / 'pipeline.json', state)
+    receipt['after_pipeline_identity'][field] = value
+    write_json(campaign / 'maintenance.json', receipt)
+    with pytest.raises(ValueError, match='receipt|upgrade'):
+        enable(campaign, before, source_root=current)
+    assert json.loads((campaign / 'pipeline.json').read_text()) == state
