@@ -184,13 +184,13 @@ def tiny_training(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('method', ['vqgan', 'simvp', 'flow_uniform', 'flow_alpha'])
-@pytest.mark.parametrize('failure', [None, 'validation', 'logging', 'finalization'])
+@pytest.mark.parametrize('failure', [None, 'validation', 'logging', 'finalization', 'missing_metadata'])
 def test_all_trainers_stop_resume_and_finalize_before_the_cap(tiny_training, monkeypatch, method, failure):
     from scientific import runner
     from scientific.pipeline import Stage, validate_stage
     from training.checkpoints import latest_checkpoint
     cfg, run, controls, train, validate = tiny_training
-    controls['failure'] = failure
+    controls['failure'] = 'validation' if failure == 'missing_metadata' else failure
     original_log = runner.record_metrics
     original_finalize = runner.finalize_selection
 
@@ -206,9 +206,11 @@ def test_all_trainers_stop_resume_and_finalize_before_the_cap(tiny_training, mon
         with pytest.raises(RuntimeError, match='interrupted'):
             train(method)
         saved = torch.load(latest_checkpoint(run), weights_only=True)
-        if failure in ('validation', 'logging'):
+        if failure in ('validation', 'logging', 'missing_metadata'):
             assert saved['step'] == 4 and saved['extra']['last_validated_step'] == 2
             controls['pending_validation'] = True
+        if failure == 'missing_metadata':
+            (run / 'run.json').unlink()
         controls['failure'] = None
         monkeypatch.setattr(runner, 'record_metrics', original_log)
         monkeypatch.setattr(runner, 'finalize_selection', original_finalize)
