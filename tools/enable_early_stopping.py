@@ -28,7 +28,7 @@ def _write_protocol(path, cfg):
 def _apply_upgrade(campaign, receipt):
     pipeline_path = campaign / 'pipeline.json'
     state = json.loads(pipeline_path.read_text()) if pipeline_path.is_file() else None
-    if state is not None and state['identity'] not in (receipt['before_pipeline_identity'], receipt['after_pipeline_identity']):
+    if state is not None and state['identity'] not in (receipt.get('before_pipeline_identity'), receipt.get('after_pipeline_identity')):
         raise ValueError('Pipeline identity changed outside this recorded upgrade')
     _write_protocol(campaign / 'protocol.yaml', receipt['after_protocol'])
     if state is not None:

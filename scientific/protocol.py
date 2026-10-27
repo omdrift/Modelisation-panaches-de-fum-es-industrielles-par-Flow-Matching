@@ -88,6 +88,14 @@ def _early_stopping_upgrade(campaign):
         changed = {name for name in old_sources.keys() | new_sources.keys() if old_sources.get(name) != new_sources.get(name)}
         if changed - _EARLY_STOPPING_FILES:
             return None
+        old_identity = receipt.get('before_pipeline_identity')
+        new_identity = receipt.get('after_pipeline_identity')
+        if old_identity is None:
+            if new_identity is not None:
+                return None
+        elif (old_identity.get('protocol_sha256') != digest(before)
+                or new_identity != old_identity | dict(protocol_sha256=digest(after), source_sha256=digest(new_sources))):
+            return None
     except (KeyError, TypeError, ValueError, AttributeError):
         return None
     return receipt
