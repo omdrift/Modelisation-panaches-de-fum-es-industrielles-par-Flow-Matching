@@ -147,6 +147,8 @@ An open interpretation card explains the axes, units, useful signals and limitat
 
 All charts use optimizer `global_step` without smoothing. Counters such as valid frames, assignments and window counts remain available in local JSON and recorded W&B data, without automatic panels. Logging hides metrics from automatic plots by default and explicitly exposes a small set of quality signals. The named workspace disables automatic panel creation. Changing logging metadata alone does not reorganize an already saved workspace.
 
+The selection section plots the numerical training and validation LPIPS slopes, measured per 1,000 optimizer updates over the last five validations. Negative slopes mean decreasing error; positive slopes mean increasing error. The boolean `generalization/possible_overfit` stays in recorded diagnostics and is not plotted as a numerical line. The interpretation card explains these local trends and their limits.
+
 The optional editor uses a separate environment so its SDK does not change the frozen training runtime:
 
 ```bash
