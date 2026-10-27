@@ -62,6 +62,7 @@ def test_study_freezes_equal_exposure_inputs_and_only_varies_coupled_lr(tmp_path
         expected = copy.deepcopy(before)
         expected['training']['max_updates'] = 1500
         expected['training']['autoencoder'].update(learning_rate=rate, discriminator_learning_rate=rate)
+        expected['training']['early_stopping']['enabled'] = False
         assert candidate == expected
         assert digest(candidate) == item['protocol_sha256']
         assert shlex.join(item['command']) in (output / 'commands.sh').read_text()

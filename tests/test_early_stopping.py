@@ -247,3 +247,14 @@ def test_early_stop_proof_cannot_replace_incomplete_training(tmp_path, monkeypat
     torch.save(state, path)
     with pytest.raises(ValueError, match='Incomplete|early.stop|proof'):
         runner.validate_artifact(path, cfg, tmp_path, 'simvp')
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_completion_cannot_lower_the_frozen_cap_or_claim_an_unproven_plateau(enabled):
+    from scientific.early_stopping import completion_valid
+    cfg = configured_policy(enabled=enabled)
+    cfg['training']['max_updates'] = 12
+    assert not completion_valid(cfg, dict(status='complete', completed_updates=6, planned_updates=6,
+                                         termination_reason='early_stopping'))
+    assert not completion_valid(cfg, dict(status='complete', completed_updates=12, planned_updates=12,
+                                         termination_reason='early_stopping'))
