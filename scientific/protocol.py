@@ -44,10 +44,11 @@ def _source_manifest(root=Path('.')) -> dict[str, str]:
 
 
 def sources_compatible(previous, current, campaign=None, protocol_sha256=None) -> bool:
-    """Accept identical code or one explicitly recorded campaign maintenance patch.
+    """Accept identical code or one explicitly recorded campaign transition.
 
     A receipt binds the full before/after file manifests and the frozen protocol.
-    It never relaxes data, model, seed, optimizer or runtime checks.
+    The early-stopping opt-in may only add that policy. Data, model, seed,
+    optimizer and runtime identities remain checked independently.
     """
     if previous == current:
         return True

@@ -1,5 +1,4 @@
 """Plateau decisions must survive interruptions and produce usable artifacts."""
-import copy
 import json
 
 import pytest

@@ -1,4 +1,5 @@
 """Diagnostics must explain model quality without changing training state."""
+import copy
 import json
 import random
 
@@ -136,7 +137,7 @@ def test_autoencoder_inspection_never_loads_test_splits(tmp_path, monkeypatch, r
     from scientific import runner
     from scientific import protocol
     cfg = load_protocol()
-    previous = __import__('copy').deepcopy(cfg)
+    previous = copy.deepcopy(cfg)
     previous['training'].pop('early_stopping')
     old_sources, new_sources = {'scientific/runner.py': 'before'}, {'scientific/runner.py': 'after'}
     if upgraded:

@@ -161,6 +161,16 @@ def _resume_stopper(cfg, extra, best_score, best_step, last_validated, campaign)
     return stopper
 
 
+def _terminal_resume(run, cfg, root, method, step, stopper):
+    """A validated finished run is immutable, including after a policy opt-in."""
+    record = json.loads((run / 'run.json').read_text())
+    if (record.get('status') != 'complete' or record.get('completed_updates') != step
+            or not (step == cfg['training']['max_updates'] or stopper.stopped)):
+        return False
+    state = validate_artifact(run / 'best.pth', cfg, root, method)
+    return state is not None and state['extra']['completion']['completed_updates'] == step
+
+
 def predict(model, method, context, cfg, generator=None):
     # No function in this dispatch receives the target sequence.
     context_frames, horizon = forecast_task(cfg)
@@ -314,6 +324,8 @@ def train_predictor(cfg, root, method, seed, ae_path, pilot_path, run, device, r
         raise FileExistsError('Existing run: use --resume explicitly')
     best_step, best_diagnostics = selection_details(run, extra['best_validation_lpips'])
     stopper = _resume_stopper(cfg, extra, extra['best_validation_lpips'], best_step, extra.get('last_validated_step', 0), run.parent)
+    if resume and _terminal_resume(run, cfg, root, method, step, stopper):
+        return
     write_json(run / 'effective_training.json', training_description(cfg, method))
     write_json(run / 'run.json', metadata | {'status': 'running'})
     total = cfg['training']['max_updates']
@@ -448,6 +460,8 @@ def train_autoencoder(cfg, root, run, device, resume=None, monitor=None):
     best_step, best_diagnostics = selection_details(run, best)
     if resume:
         stopper = _resume_stopper(cfg, state['extra'], best, best_step, last_validated_step, run.parent)
+        if _terminal_resume(run, cfg, root, 'vqgan', step, stopper):
+            return
     write_json(run / 'effective_training.json', training_description(cfg, 'vqgan'))
     write_json(run / 'run.json', metadata | dict(status='running'))
     print(json.dumps(dict(method='vqgan', step=step, total_updates=cfg['training']['max_updates'], status='training')), flush=True)
@@ -573,7 +587,7 @@ def inspect_autoencoder(cfg, root, campaign, checkpoint, device, output=None):
         raise RuntimeError('Checkpoint changed during inspection; rerun with a stable checkpoint')
     origin = state['extra']['provenance']
     if (origin.get('method') != 'vqgan' or origin.get('seed') != cfg['training']['autoencoder_seed']
-            or origin.get('protocol_sha256') != digest(cfg)
+            or not _protocols_compatible(origin.get('protocol_sha256'), digest(cfg), campaign)
             or origin.get('dataset_sha256') != file_hash(root / 'dataset_manifest.json')
             or not sources_compatible(origin.get('source_sha256'), provenance(cfg, root)['source_sha256'], campaign, digest(cfg))):
         raise ValueError('Inspection requires a matching VQGAN checkpoint, dataset, protocol and source')
