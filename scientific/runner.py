@@ -163,9 +163,10 @@ def _resume_stopper(cfg, extra, best_score, best_step, last_validated, campaign)
 
 def _terminal_resume(run, cfg, root, method, step, stopper):
     """A validated finished run is immutable, including after a policy opt-in."""
+    if not (step == cfg['training']['max_updates'] or stopper.stopped) or not (run / 'run.json').is_file():
+        return False
     record = json.loads((run / 'run.json').read_text())
-    if (record.get('status') != 'complete' or record.get('completed_updates') != step
-            or not (step == cfg['training']['max_updates'] or stopper.stopped)):
+    if record.get('status') != 'complete' or record.get('completed_updates') != step:
         return False
     state = validate_artifact(run / 'best.pth', cfg, root, method)
     return state is not None and state['extra']['completion']['completed_updates'] == step
