@@ -4,6 +4,7 @@ import json
 
 import pytest
 import torch
+import yaml
 
 from scientific.protocol import digest, file_hash, load_protocol, write_json
 
@@ -112,6 +113,7 @@ def tiny_training(tmp_path, monkeypatch):
                           methods={m: {'micro_batch': 4} for m in ('simvp', 'flow_uniform', 'flow_alpha')}))
 
     class TinyDataset:
+        records = [dict(window_id='fixture', date='2019-02-03', camera_id=0, view_id=0)]
         def __init__(self, *args):
             pass
         def __len__(self):
@@ -293,7 +295,7 @@ def test_legacy_opt_in_continues_from_saved_optimizer_step(tiny_training, tmp_pa
     cfg, run, controls, train, validate = tiny_training
     cfg['training'].pop('early_stopping')
     campaign = run.parent
-    (campaign / 'protocol.yaml').write_text(__import__('yaml').safe_dump(cfg))
+    (campaign / 'protocol.yaml').write_text(yaml.safe_dump(cfg))
     before, after = tmp_path / 'before', tmp_path / 'after'
     for root, content in ((before, 'before'), (after, 'after')):
         (root / 'scientific').mkdir(parents=True)
@@ -329,4 +331,14 @@ def test_legacy_opt_in_continues_from_saved_optimizer_step(tiny_training, tmp_pa
     controls['pending_validation'] = True
     train(method, checkpoint)
     assert json.loads((run / 'run.json').read_text())['completed_updates'] == 6
-    assert validate(method)['extra']['completion']['termination_reason'] == 'early_stopping'
+    selected = validate(method)
+    assert selected['extra']['completion']['termination_reason'] == 'early_stopping'
+    if method != 'vqgan':
+        monkeypatch.setattr(runner, 'validate_artifact', lambda *a: selected)
+        monkeypatch.setattr(runner, 'predict', lambda model, method, context, cfg, generator=None:
+                            (context[:, -1:].repeat(1, cfg['evaluation']['horizon'], 1, 1, 1), 1))
+        monkeypatch.setattr(runner, 'frame_metrics', lambda prediction, *a:
+                            [dict(horizon=i + 1, lpips=0.2) for i in range(len(prediction))])
+        rows = runner.evaluate(cfg, campaign / 'data', method, 17, run / 'best.pth', campaign / 'common.pth',
+                               'test_dates', campaign / 'evaluated', torch.device('cpu'), metric=torch.nn.Identity())
+        assert len(rows) == cfg['evaluation']['horizon'] * (4 if method.startswith('flow') else 1)
