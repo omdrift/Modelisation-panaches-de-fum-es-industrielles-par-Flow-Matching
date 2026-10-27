@@ -1,7 +1,7 @@
 import torch
 from torch.optim import SGD
 
-from training.training_loop import _load_checkpoint
+from training.checkpoints import load_checkpoint
 
 
 def test_flow_matching_checkpoint_restores_weights_and_step(tmp_path):
@@ -23,7 +23,7 @@ def test_flow_matching_checkpoint_restores_weights_and_step(tmp_path):
         for parameter in model.parameters():
             parameter.zero_()
 
-    step = _load_checkpoint(
+    step = load_checkpoint(
         model,
         optimizer,
         scheduler,

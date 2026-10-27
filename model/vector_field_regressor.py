@@ -6,7 +6,6 @@ import torch.nn as nn
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 
-from lutils.configuration import Configuration
 from model.layers.position_encoding import build_position_encoding
 
 
@@ -155,7 +154,7 @@ class VectorFieldRegressor(nn.Module):
         return out
 
 
-def build_vector_field_regressor(config: Configuration, reference: bool = True):
+def build_vector_field_regressor(config: dict, reference: bool = True):
     return VectorFieldRegressor(
         state_size=config["state_size"],
         state_res=config["state_res"],

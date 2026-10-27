@@ -18,13 +18,15 @@ class ConditioningIndices:
 class ConditioningSampler:
     """Choose a target, its immediate predecessor, and an earlier condition."""
 
-    def sample(self, batch_size: int, num_observations: int, device: torch.device) -> ConditioningIndices:
+    def sample(self, batch_size: int, num_observations: int, device: torch.device, min_target_index: int = 2) -> ConditioningIndices:
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
         if num_observations < 3:
             raise ValueError("num_observations must be at least 3")
+        if not 2 <= min_target_index < num_observations:
+            raise ValueError("min_target_index must be >= 2 and below the window length")
 
-        target = torch.randint(2, num_observations, (batch_size,), device=device)
+        target = torch.randint(min_target_index, num_observations, (batch_size,), device=device)
         reference = target - 1
         # Multiplying by (target - 1) gives the integer range [0, target - 2].
         condition = (torch.rand(batch_size, device=device) * (target - 1)).floor().long()

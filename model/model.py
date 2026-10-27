@@ -1,25 +1,26 @@
+from __future__ import annotations
+
 from typing import Any
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 try:
     from torchdiffeq import odeint
 except ImportError:
     from model.ode import odeint
 from tqdm import tqdm
 
-from lutils.configuration import Configuration
 from lutils.dict_wrapper import DictWrapper
 from model.autoencoder_adapter import AutoencoderAdapter
 from model.conditioning import ConditioningSampler
 from model.flow_matching import FlowMatchingObjective
 from model.vector_field_regressor import build_vector_field_regressor
-from model.vqgan.taming.autoencoder import vq_f8_ddconfig, vq_f8_small_ddconfig, vq_f16_ddconfig, VQModelInterface
 from model.vqgan.vqvae import build_vqvae
 
 
 class Model(nn.Module):
-    def __init__(self, config: Configuration):
+    def __init__(self, config: dict, load_autoencoder: bool = True):
         super(Model, self).__init__()
 
         self.config = config
@@ -30,44 +31,21 @@ class Model(nn.Module):
             smoke_threshold=float(config.get("smoke_threshold", 0.1)),
         )
 
-        if config["autoencoder"]["type"] == "ours":
-            self.ae = build_vqvae(
-                config=config["autoencoder"],
-                convert_to_sequence=True)
-            self.ae.backbone.load_from_ckpt(config["autoencoder"]["ckpt_path"])
-        else:
-            if config["autoencoder"]["config"] == "f8":
-                ae_config = vq_f8_ddconfig
-            elif config["autoencoder"]["config"] == "f8_small":
-                ae_config = vq_f8_small_ddconfig
-            else:
-                ae_config = vq_f16_ddconfig
-            self.ae = VQModelInterface(ae_config, config["autoencoder"]["ckpt_path"])
-        self.autoencoder = AutoencoderAdapter(self.ae, config["autoencoder"]["type"])
+        if config['autoencoder']['type'] != 'vqgan':
+            raise ValueError('The predictor requires the configured VQGAN autoencoder')
+        self.ae = build_vqvae(config=config['autoencoder'], convert_to_sequence=True)
+        if load_autoencoder:
+            self.ae.backbone.load_from_ckpt(config['autoencoder']['ckpt_path'])
+        self.autoencoder = AutoencoderAdapter(self.ae)
 
         self.vector_field_regressor = build_vector_field_regressor(
             config=self.config["vector_field_regressor"])
 
-    def load_from_ckpt(self, ckpt_path: str):
-        loaded_state = torch.load(ckpt_path, map_location="cpu")
-
-        is_ddp = False
-        for k in loaded_state["model"]:
-            if k.startswith("module"):
-                is_ddp = True
-                break
-        if is_ddp:
-            state = {k.replace("module.", ""): v for k, v in loaded_state["model"].items()}
-        else:
-            state = {f"module.{k}": v for k, v in loaded_state["model"].items()}
-
-        dmodel = self.module if isinstance(self, torch.nn.parallel.DistributedDataParallel) else self
-        dmodel.load_state_dict(state)
-
     def forward(
             self,
             observations: torch.Tensor,
-            observations_are_latents: bool = False) -> DictWrapper[str, Any]:
+            observations_are_latents: bool = False,
+            alpha_masks: torch.Tensor | None = None) -> DictWrapper[str, Any]:
         """
 
         :param observations: [b, num_observations, num_channels, height, width]
@@ -81,6 +59,7 @@ class Model(nn.Module):
             batch_size=batch_size,
             num_observations=num_observations,
             device=observations.device,
+            min_target_index=int(self.config.get("min_target_index", self.config.get("context_frames", 2))),
         )
         batch_indices = torch.arange(batch_size, device=observations.device)
         target_frames = observations[batch_indices, sampled_indices.target]
@@ -90,7 +69,7 @@ class Model(nn.Module):
         # Encode observations to latent codes (or assume observations already latents)
         if observations_are_latents:
             # observations are expected as [b, n, c, h, w] in latent space
-            latents = observations
+            latents = torch.stack([target_frames, reference_frames, conditioning_frames], dim=1)
         else:
             with torch.no_grad():
                 self.ae.eval()
@@ -101,6 +80,14 @@ class Model(nn.Module):
         conditioning_latents = latents[:, 2]
 
         flow_sample = self.flow_matching_objective.sample(target_latents)
+        smoke_mask = flow_sample.smoke_mask
+        if alpha_masks is not None:
+            if alpha_masks.shape[:3] != (batch_size, num_observations, 1):
+                raise ValueError("alpha_masks must have shape [batch, time, 1, height, width]")
+            smoke_mask = F.adaptive_avg_pool2d(
+                alpha_masks[batch_indices, sampled_indices.target], target_latents.shape[-2:])
+        elif self.config.get("mask_source") == "alpha":
+            raise ValueError("The scientific protocol requires alpha_masks")
 
         # Predict vectors
         reconstructed_vectors = self.vector_field_regressor(
@@ -117,7 +104,9 @@ class Model(nn.Module):
             # Data for loss calculation
             reconstructed_vectors=reconstructed_vectors,
             target_vectors=flow_sample.target_vectors,
-            smoke_mask=flow_sample.smoke_mask)
+            smoke_mask=smoke_mask,
+            latent_mask_fraction=flow_sample.smoke_mask.mean(),
+            target_indices=sampled_indices.target)
 
     @torch.no_grad()
     def generate_frames(
@@ -127,7 +116,8 @@ class Model(nn.Module):
             steps: int = 100,
             warm_start: float = 0.0,
             past_horizon: int = -1,
-            verbose: bool = False) -> torch.Tensor:
+            verbose: bool = False,
+            generator: torch.Generator | None = None) -> torch.Tensor:
         """
         Generates num_frames frames conditioned on observations
 
@@ -139,6 +129,14 @@ class Model(nn.Module):
         :param verbose: whether to display loading bar
         """
 
+        if observations.ndim != 5 or observations.size(1) < 1:
+            raise ValueError("observations must be a nonempty [B,T,C,H,W] tensor")
+        if num_frames is None or num_frames < 0 or steps < 2 or not 0 <= warm_start < 1:
+            raise ValueError("Require num_frames >= 0, steps >= 2 and 0 <= warm_start < 1")
+        if past_horizon != -1 and past_horizon < 1:
+            raise ValueError("past_horizon must be -1 or positive")
+        self.last_nfe = 0
+        ae_out_ch = None
         # Encode observations to latents (observations may already be latents)
         self.ae.eval()
         if getattr(self, 'config', None) is not None and isinstance(observations, torch.Tensor):
@@ -169,12 +167,13 @@ class Model(nn.Module):
         gen = tqdm(range(num_frames), desc="Generating frames", disable=not verbose, leave=False)
         for _ in gen:
             def f(t: torch.Tensor, y: torch.Tensor):
-                lower_bound = 0 if past_horizon == -1 else min(0, latents.size(1) - past_horizon)
+                self.last_nfe += 1
+                lower_bound = 0 if past_horizon == -1 else max(0, latents.size(1) - 1 - past_horizon)
                 higher_bound = latents.size(1) - 1
 
                 # Sample conditioning and reference
-                conditioning_latents_indices = torch.randint(low=lower_bound, high=higher_bound, size=[b])
-                conditioning_latents = latents[torch.arange(b), conditioning_latents_indices]
+                conditioning_latents_indices = torch.randint(low=lower_bound, high=higher_bound, size=[b], device=latents.device, generator=generator)
+                conditioning_latents = latents[torch.arange(b, device=latents.device), conditioning_latents_indices]
                 reference_latents = latents[:, -1]
 
                 # Calculate index distances
@@ -189,14 +188,14 @@ class Model(nn.Module):
                     timestamps=t * torch.ones(b).to(latents.device))
 
             # Initialize with noise
-            noise = torch.randn([b, c, h, w]).to(latents.device)
+            noise = torch.randn([b, c, h, w], device=latents.device, dtype=latents.dtype, generator=generator)
             y0 = (1 - (1 - self.sigma) * warm_start) * noise + warm_start * latents[:, -1]
 
             # Solve ODE
             next_latents = odeint(
                 f,
                 y0,
-                t=torch.linspace(warm_start, 1, int((1 - warm_start) * steps)).to(y0.device),
+                t=torch.linspace(warm_start, 1, max(2, int((1 - warm_start) * steps)), device=y0.device),
                 method="rk4"
             )[-1]
             latents = torch.cat([latents, next_latents.unsqueeze(1)], dim=1)
