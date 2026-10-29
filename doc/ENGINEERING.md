@@ -1,41 +1,65 @@
-# Industrial Plume Forecasting — engineering design and verification
+# Industrial Plume Forecasting — engineering contracts
 
-## Responsibilities and boundaries
+## Responsibilities
 
-The command-line entry point coordinates the workflow. Preparation owns RGB/mask transformation and immutable dataset manifests. Training owns model updates and recoverable optimizer/RNG state. Diagnostics measure fixed panels without advancing training randomness. Evaluation receives only observed frames during generation; aggregation verifies complete metric coverage before producing reports.
+The CLI exposes preparation, fixed-configuration campaigns and controlled studies. Data preparation owns RGB/mask transformation and immutable manifests. Training owns parameter updates and recoverable state. Diagnostics measure fixed panels without advancing training randomness. Study orchestration ranks candidates on validation and freezes selected artifacts before held-out evaluation.
 
 | Concern | Implementation | Contract |
-| --- | --- | --- |
-| CLI definition and dispatch | `scientific/cli.py` | Existing subcommands, arguments, help text and exit behavior |
-| RISE clips and partitions | `scientific/data.py`, `scientific/protocol.py` | 36 frames, estimated alpha, temporal continuity, disjoint identifiers |
-| Execution provenance | `scientific/protocol.py` | One source-manifest implementation shared by runs, orchestration and calibration registration |
-| Model updates | `scientific/runner.py`, `model/` | Existing sampling, objective, optimizer order and generation behavior |
-| Validation plateau | `scientific/early_stopping.py` | Shared patience policy, committed validation decisions, raw minimum selection, persisted counters |
-| Checkpoint storage | `training/checkpoints.py` | Atomic replacement, two recovery checkpoints, separate validation-selected artifact |
-| Measurements and presentation | `scientific/diagnostics.py`, `scientific/monitoring.py` | Fixed examples, regional errors, explicit units, RNG preservation |
-| Evaluation summary | Private helpers in `scientific/cli.py` | Validation, reduction, comparisons and plotting have separate responsibilities |
+|---|---|---|
+| Public entry point | `scientific/cli.py` | Existing imports and commands remain compatible; `study` adds controlled comparison. |
+| Study orchestration | `scientific/study.py` | Sequential execution, explicit phase dependencies, provenance, persistent trials and final selection. |
+| Data and partitions | `scientific/data.py`, `scientific/protocol.py` | 36 frames, 64×64 RGB, finite estimated alpha, temporal continuity and disjoint identifiers. |
+| Training | `scientific/runner.py`, `model/` | Fixed effective batch, declared objectives, compatible latent dimensions and reproducible generation. |
+| Validation plateau | `scientific/early_stopping.py` | Raw-minimum selection is separate from significant-improvement patience; counters persist. |
+| Checkpoints | `training/checkpoints.py` | Atomic writes, two recovery states, selected model, RNG and optional scaler restoration. |
+| Diagnostics | `scientific/diagnostics.py`, `scientific/monitoring.py` | Fixed panels and draws, explicit units, image/animation exports, local and optional W&B outputs. |
+| Presentation | `tools/configure_wandb.py`, `tools/monitor_campaign.py` | Method-specific views, escaped status HTML, isolated observation and offline-mode preservation. |
 
-The import namespace, public function signatures, classes and canonical filenames are stable. The project name is Industrial Plume Forecasting. Compatibility paths are retained instead of introducing a second command-line implementation.
+## Study contract
 
-## Structural changes
+`configs/experiment_study.yaml` declares the experiment before execution. The default comparison crosses three learning rates and two schedulers for each model. Exploration and transfer probes are capped at 15,000 updates; finalist confirmation and weighted Flow at 50,000. The complete staged plan contains at most 29 training runs, including three-seed confirmations.
 
-- Separate parser construction, locked GPU dispatch and training dispatch. The same argument definitions and checks execute in the same order.
-- Separate evaluation loading/validation, horizon reductions, paired comparisons, quality/cost reductions and plotting. Numerical reduction order and output schemas are retained.
-- Consolidate duplicated source-tree walks into one private manifest helper. The four source roots, relative keys and hashing algorithm are unchanged.
-- Keep training kernels and generation algorithms intact. Extracting them solely to reduce line count would introduce extra state boundaries around optimizer updates, tensor lifetimes and interrupted checkpoints.
-- Retain independent automatic data checks when source MP4s are absent. A finalized prepared dataset is reusable; an incomplete preparation still needs its original video path.
+`study --dry-run` creates no files, starts no GPU work and does not require importing Optuna. An executed study stores trials in `optuna.sqlite3`, progress in `study.json`, tabular evidence in `experiments.csv`, and automatic reports in JSON/Markdown. Each run has a resolved protocol. Resume validates identities and hashes before reusing completed results.
 
-## Verification contracts
+VQGAN is selected by reconstruction followed by controlled forecast probes. Flow is selected by mean validation LPIPS across confirmation seeds; weighted Flow reuses the selected settings. Intermediate and final test results cannot promote candidates. `final_selection.json` records the frozen choices and artifact hashes before test decoding and evaluation.
 
-`tests/contracts/public_api.json` records readable argument and return annotations for the declared public functions, classes and methods. `tests/contracts/cli_help.json` records the root help and twelve subcommand help screens. These are interface contracts, not experiment results. Deliberate API changes require explicit review of these files.
+A test set may be identified by manifest during search, but its pixels and scores remain deferred. Search-time audits inspect train/validation integrity and exact raw-RGB duplicates. Similarity flags are evidence, not instructions to silently remove or move data. Correcting an invalid partition requires a distinct dataset version.
 
-The fixed full-summary fixture exercises all five methods, the three predictor seeds, both test splits, and every horizon/realization cell. Aggregation rejects missing cells, non-finite metrics and mismatched test panels. The refactoring was also checked against the preceding implementation: the JSON, three CSV files and three PNG figures were byte-identical on that fixture.
+## Training and recovery invariants
 
-The broader suite covers causal extraction, clip geometry and mask validity, target sampling, deterministic generation, gradient accumulation, codebook statistics, checkpoint rotation and interrupted recovery, optional W&B logging, and pipeline reuse after MP4 removal.
+- Context, future horizon and stored clip length are distinct: 5, 15 and 36 in the reference study.
+- Flow training uses a target/reference/earlier-condition triplet; generation receives observations only and then its own predictions.
+- Diagnostics preserve Python, NumPy, torch and CUDA random states and module modes. Fixed Flow objective draws do not consume training randomness.
+- The minimum raw validation LPIPS selects `best.pth`. `min_delta` controls the patience reference, not whether a lower raw score is eligible.
+- VQGAN validation/patience are 250 updates/10 checks; Flow uses 2,500/four in the study. Both begin counting after 5,000 updates and use `min_delta=1e-4`.
+- A valid early stop completes the run with an explicit reason. An interrupted validation is replayed before another update. Terminal outputs remain immutable on resume.
+- Checkpoints include optimizer, scheduler, RNG, patience and scaler state when AMP is enabled. VQGAN includes discriminator state. Rotation follows a successful atomic write.
+- Exact resume preserves the recipe. Fine-tuning is a new run using `training.init_from`, a parent fingerprint and explicit resets of optimizer, scheduler, RNG and early stopping. A missing parent discriminator requires an explicit discriminator reset.
 
-Early-stopping tests exercise all four learned trainers with CPU fixtures: significant versus raw improvements, initial phases, incomplete validation replay, finalization failures, terminal artifact hashes, and old-campaign opt-in through evaluation and inspection. A short completed run requires a decision bound to the frozen policy and maximum updates. The explicit upgrade only enables that policy, verifies old source fingerprints, refuses active or tested campaigns, and leaves checkpoint tensors unchanged. Fixed-exposure calibration disables the policy.
+The import namespace `scientific`, model classes and existing public signatures remain stable. Optional study, scheduler, initialization and precision settings extend the implementation without silently changing a fixed campaign's frozen configuration.
 
-The GitHub Actions workflow runs the suite on Python 3.11 with CPU PyTorch. Other dependency pins are read from the canonical environment file. This job checks software contracts without starting a training campaign; it does not validate CUDA throughput or predictive quality.
+## Observability and failures
+
+Quality curves use comparable fixed train/validation panels. VQGAN adds codebook usage and full-clip reconstructions; Flow adds fixed-draw latent objectives, decoded-image quality and full-horizon previews. PNG/GIF exports use fixed identifiers. LPIPS controls selection; an objective decrease, a trend flag or a patience limit is not proof of generalization.
+
+W&B is optional. Local logs, metrics and reports remain usable without a network connection. W&B views group meaningful comparisons and leave detailed slices collapsed. The artifact observer has its own lock and `status.json`, separate from training `run.json` records and provenance transitions.
+
+Observer initialization is followed immediately by protected cleanup. Disk, logging and final-status errors still attempt SDK finalization. A secondary cleanup error warns without replacing the triggering exception. Resume checks project/entity destination; offline runs do not implicitly initialize online tracking. All dynamic HTML fields are escaped and external links are restricted to supported HTTPS tracking hosts. The observed protocol must match the frozen pipeline identity.
+
+Failed, interrupted, OOM, non-finite and pruned runs remain recorded. An incomplete output is not a completed experiment. Evaluation summaries reject incomplete horizon/realization grids, duplicate keys, non-finite values and mismatched panels.
+
+## Verification
+
+The automated suite covers interface contracts and behavior, including:
+
+- causal preprocessing, clip geometry, temporal continuity, mask bounds and split integrity;
+- fixed search spaces, stage counts, candidate ranking, same-stage pruning and test deferral;
+- scalar metrics, realization means, codebook statistics and fixed visual identifiers;
+- training-RNG preservation, generation without future inputs and meaningful train/validation objective separation;
+- constant/cosine scheduling, warmup, early-stop counters and strict checkpoint compatibility;
+- checkpoint rotation, parent initialization, interruption recovery and optional scaler restoration;
+- W&B failures, offline mode, disk failures, HTML escaping and independent observer cleanup;
+- local plots, images, animations, structured reports and a short synthetic CPU study.
 
 ```bash
 python -m pytest -q
@@ -43,8 +67,8 @@ python -m compileall -q scientific model training lutils tools tests
 git diff --check
 ```
 
-No GPU campaign is needed for these software checks. They establish implementation contracts on fixtures, not forecasting quality on RISE. GPU numerical equivalence, completed multi-seed comparisons, independent segmentation accuracy and final held-out forecasting claims require their corresponding experimental evidence.
+Tests establish software behavior on fixtures. They do not establish CUDA performance, segmentation accuracy, forecasting superiority or the selected hyperparameters' scientific validity. Such claims require the corresponding completed experiments and identified artifacts. The CPU GitHub Actions workflow is a software check; its configured existence alone is not evidence that a particular remote run succeeded.
 
-## Publication scope
+## Publication boundary
 
-The repository publishes implementation, protocol, references, tests and component licenses. Source videos, NPZ datasets, model caches, checkpoint tensors, credentials and tracking sessions remain outside Git. Forecast quality claims must link to complete, identified evaluations; reconstruction scores alone do not establish future-frame accuracy.
+Publish implementation, configurations, protocols, references, tests and component notices. Keep credentials, source videos, prepared tensors, pretrained weights, checkpoints and tracking sessions outside Git. Forecast claims must refer to complete held-out evaluations; reconstruction scores alone do not establish future-frame accuracy.

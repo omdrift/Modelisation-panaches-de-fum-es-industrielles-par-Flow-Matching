@@ -11,7 +11,7 @@ from torch.nn import functional as F
 from lutils.dict_wrapper import DictWrapper
 from scientific.diagnostics import (
     codebook_statistics, evaluation_mode, export_snapshot, forecast_snapshot,
-    image_errors, reconstruction_snapshot, trend_diagnostics,
+    image_errors, reconstruction_snapshot, sequence_snapshot, trend_diagnostics,
 )
 from scientific.protocol import load_protocol, write_json
 from training.checkpoints import capture_rng_state
@@ -57,6 +57,8 @@ def test_smoke_metrics_keep_absent_regions_missing():
     rows = image_errors(prediction, target, torch.zeros(1, 1, 8, 8), torch.tensor([0.2]))
     assert rows[0]['mse'] == 1 and rows[0]['background_mse'] == 1
     assert rows[0]['smoke_mse'] is None
+    assert rows[0]['ssim'] < 0.01
+    assert image_errors(target, target, torch.ones(1, 1, 8, 8), torch.zeros(1))[0]['ssim'] == pytest.approx(1)
     with pytest.raises(FloatingPointError):
         image_errors(prediction * float('nan'), target, torch.ones(1, 1, 8, 8), torch.tensor([0.2]))
 
@@ -118,6 +120,58 @@ def test_forecast_diagnostics_pass_only_context_and_use_fixed_draws():
             prediction = predict(frames[None, :5], generator)[0].clamp(-1, 1)
             reference.append(float(Perceptual()(prediction, frames[5:8]).mean()))
     assert first.score == float(np.mean(reference))
+
+
+def test_forecast_multiple_draws_average_scores_instead_of_images():
+    cfg = load_protocol()
+    cfg['evaluation'].update(context_frames=5, horizon=3)
+    cfg['diagnostics'] = dict(forecast_realizations=4, train_windows=60, visual_windows=8, export_sequences=True)
+    calls = []
+
+    def predict(context, generator):
+        calls.append(context.shape)
+        value = float(torch.rand((), generator=generator))
+        return torch.full((1, 3, 3, 8, 8), value)
+
+    snapshot = forecast_snapshot(torch.nn.Identity(), Panel(size=2), Perceptual(), cfg, 'cpu', predict, train_panel=True)
+    assert len(calls) == 8
+    assert snapshot.summary()['windows'] == 2
+    assert snapshot.summary()['realizations'] == 4
+    assert snapshot.score == pytest.approx(np.mean([row['lpips'] for row in snapshot.rows]))
+    assert {row['realization'] for row in snapshot.rows} == {0, 1, 2, 3}
+    assert len(snapshot.sequences) == 2
+    assert snapshot.sequences[0]['context'].shape[0] == 5
+    assert snapshot.summary()['diversity_mse'] > 0
+
+
+def test_full_reconstruction_sequences_use_all_36_frames_and_fixed_visual_limit():
+    cfg = load_protocol()
+    cfg['diagnostics'] = dict(export_sequences=True, reconstruction_all_frames=True, visual_windows=2)
+    snapshot = reconstruction_snapshot(TinyAE(), Panel(size=3), Perceptual(), cfg, 'cpu')
+    assert len(snapshot.rows) == 3 * 36
+    assert snapshot.summary()['windows'] == 3
+    assert len(snapshot.sequences) == 2
+    assert snapshot.sequences[0]['target'].shape == (36, 3, 8, 8)
+    assert snapshot.sequences[0]['prediction'].shape == (36, 3, 8, 8)
+
+
+def test_test_sequence_collection_is_gated_and_predictor_only_receives_context():
+    cfg = load_protocol()
+    cfg['evaluation'].update(context_frames=5, horizon=15)
+    cfg['diagnostics'] = dict(visual_windows=2)
+    panel = Panel('test', 4)
+    with pytest.raises(ValueError, match='frozen'):
+        sequence_snapshot(TinyAE(), panel, cfg, 'cpu', split='test_dates')
+    calls = []
+
+    def predict(context, generator):
+        calls.append(context.shape)
+        return context[:, -1:].expand(1, 15, 3, 8, 8)
+
+    snapshot = sequence_snapshot(torch.nn.Identity(), panel, cfg, 'cpu', predict,
+                                 split='test_dates', final_selection_frozen=True)
+    assert calls == [(1, 5, 3, 8, 8)] * 2
+    assert len(snapshot.sequences) == 2
 
 
 def test_possible_overfit_requires_a_full_advisory_trend(tmp_path):

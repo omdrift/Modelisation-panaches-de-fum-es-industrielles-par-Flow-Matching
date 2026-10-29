@@ -15,6 +15,7 @@ import time
 from types import SimpleNamespace
 from urllib.parse import urlparse
 from uuid import uuid4
+import warnings
 
 import yaml
 
@@ -73,7 +74,7 @@ def _training_row(campaign, method, seed, cfg, stages):
         best_lpips=val.get('selection/best_validation_lpips', metadata.get('best_validation_lpips')),
         best_step=val.get('selection/best_step'), bad_checks=val.get('early_stopping/bad_checks'),
         patience=val.get('early_stopping/patience'), termination_reason=metadata.get('termination_reason'),
-        url=tracking.get('url'), realizations=1,
+        url=tracking.get('url'), realizations=val.get('validation/realizations', 1),
         horizons=_horizons(run, val_step, cfg) if method != 'vqgan' else [])
 
 
@@ -83,6 +84,8 @@ def collect_snapshot(campaign):
     cfg = yaml.safe_load((campaign / 'protocol.yaml').read_text())
     state = _json(campaign / 'pipeline.json')
     identity, saved = state['identity'], state['stages']
+    if identity.get('protocol_sha256') != digest(cfg):
+        raise ValueError('Frozen protocol does not match the pipeline protocol identity')
     args = SimpleNamespace(campaign=str(campaign), data=identity['data'], videos=identity['videos'],
         methods=identity['methods'], seeds=identity['seeds'], wandb=False, batch_frames=1,
         cache_dir=None, local_files_only=False)
@@ -145,7 +148,7 @@ def render_status(snapshot):
         'td,th{border:1px solid #d5dce3;padding:7px;text-align:left}th{background:#edf3f7}h2{margin-top:24px}',
         '</style></head><body><h1>Industrial Plume Forecasting — campagne</h1>',
         f"<p>État enregistré : {_cell(snapshot['pipeline_status'])} — étape : {_cell(snapshot['current_stage'])}</p>",
-        f"<p>Lecture UTC : {_cell(snapshot['observed_at_utc'])}. Prévision : {snapshot['context_frames']} observations → {snapshot['horizon']} images futures.</p>"]
+        f"<p>Lecture UTC : {_cell(snapshot['observed_at_utc'])}. Prévision : {_cell(snapshot['context_frames'])} observations → {_cell(snapshot['horizon'])} images futures.</p>"]
     if snapshot['error']:
         parts.append(f"<p>Erreur : {_cell(snapshot['error'])}</p>")
     links = []
@@ -153,7 +156,7 @@ def render_status(snapshot):
         url = row.get('url')
         parsed = urlparse(url or '')
         if parsed.scheme == 'https' and parsed.hostname in ('wandb.ai', 'forge.coreweave.com'):
-            links.append(f'<a href="{escape(url, quote=True)}">{escape(row["method"])} {row["seed"]}</a>')
+            links.append(f'<a href="{escape(url, quote=True)}">{_cell(row["method"])} {_cell(row["seed"])}</a>')
     parts += ['<p>' + ' · '.join(links) + '</p>', '<h2>Étapes</h2>',
         '<p>pending = en attente ; running = en cours ; complete = terminé. La durée correspond à la dernière exécution enregistrée, pas au temps GPU cumulé.</p>',
         _table(snapshot['stages'], [('name', 'Étape'), ('status', 'État'), ('seconds', 'Dernière durée (s)')]),
@@ -164,13 +167,14 @@ def render_status(snapshot):
                 ('inference_seconds', 'Génération (s)'), ('peak_memory_bytes', 'Mémoire maximale (octets)')]),
         '<h2>Entraînements</h2><p>Les métriques correspondent à la dernière validation, dont le step est indiqué séparément de la progression.</p>',
         _table(snapshot['training'], [('method', 'Méthode'), ('seed', 'Graine'), ('status', 'État'), ('updates', 'Mises à jour'),
-            ('validation_step', 'Step validation'), ('train_eval_lpips', 'LPIPS apprentissage'), ('validation_lpips', 'LPIPS validation'),
+            ('validation_step', 'Step validation'), ('realizations', 'Réalisations / fenêtre'),
+            ('train_eval_lpips', 'LPIPS apprentissage'), ('validation_lpips', 'LPIPS validation'),
             ('best_lpips', 'Meilleur LPIPS'), ('best_step', 'Meilleur step'), ('bad_checks', 'Patience consommée'), ('patience', 'Seuil'),
             ('termination_reason', 'Motif de fin')]), '<h2>Validation selon l’horizon</h2>',
-        '<p>1 réalisation fixe par fenêtre, sur les diagnostics existants. Ce tableau ne représente pas la moyenne des 4 réalisations des tests Flow Matching.</p>']
+        '<p>La validation utilise par défaut 1 réalisation fixe par fenêtre. Le nombre effectif enregistré est indiqué pour chaque run ; il peut atteindre 4 lors des confirmations. Ces diagnostics de validation restent distincts des tests finaux.</p>']
     for row in snapshot['training']:
         if row['horizons']:
-            parts += [f'<h3>{escape(row["method"])} — graine {row["seed"]}, validation {row["validation_step"]}</h3>',
+            parts += [f'<h3>{_cell(row["method"])} — graine {_cell(row["seed"])}, validation {_cell(row["validation_step"])}</h3>',
                       _table(row['horizons'], [('horizon', 'Horizon'), ('lpips', 'LPIPS moyen'), ('frames', 'Images mesurées')])]
     parts += ['<h2>Tests réservés</h2><p>Les archives présentes indiquent seulement la progression des écritures. Les sorties incomplètes ne constituent pas un résultat final.</p>',
         _table(snapshot['evaluations'], [('name', 'Évaluation'), ('status', 'État'), ('archives_present', 'Archives présentes'),
@@ -207,6 +211,27 @@ def _tracking_identity(campaign):
     raise ValueError('Campaign has no W&B identity; start its pipeline with --wandb')
 
 
+def _finish_observer(run, directory, snapshot, *, failed, primary_error):
+    """Attempt both cleanup operations without hiding the triggering failure."""
+    errors = []
+    try:
+        write_json(directory / 'status.json', dict(method='campaign_monitor',
+            status='failed' if failed else 'complete', pipeline_status=snapshot['pipeline_status']))
+    except Exception as exc:
+        errors.append(exc)
+    try:
+        run.finish(exit_code=1 if failed or errors else 0)
+    except Exception as exc:
+        errors.append(exc)
+    if primary_error is not None:
+        for error in errors:
+            warnings.warn(f'Observer cleanup failed: {error}', UserWarning, stacklevel=2)
+    elif errors:
+        for error in errors[1:]:
+            warnings.warn(f'Observer cleanup failed: {error}', UserWarning, stacklevel=2)
+        raise errors[0]
+
+
 def observe(campaign, *, follow=False, interval=30.0, configure_views=False):
     """Publish a separate observer run; its failures never stop the campaign."""
     if isinstance(interval, bool) or not math.isfinite(interval) or interval <= 0:
@@ -214,6 +239,11 @@ def observe(campaign, *, follow=False, interval=30.0, configure_views=False):
     campaign = Path(campaign).resolve()
     snapshot = collect_snapshot(campaign)
     origin = _tracking_identity(campaign)
+    mode = origin.get('mode', 'online')
+    if mode not in ('online', 'offline'):
+        raise ValueError('Campaign observer requires an online or offline W&B identity')
+    if configure_views and mode != 'online':
+        raise ValueError('Configuring remote W&B views requires online mode')
     directory = campaign / 'campaign_monitor'
     directory.mkdir(exist_ok=True)
     with (directory / 'observer.lock').open('a+') as lock:
@@ -221,23 +251,26 @@ def observe(campaign, *, follow=False, interval=30.0, configure_views=False):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise RuntimeError('Another campaign observer is already running') from exc
-        sdk = _load_wandb()
         old_identity = _json(directory / 'wandb.json', {})
+        if old_identity and any(old_identity.get(key) != origin[key] for key in ('project', 'entity')):
+            raise ValueError('Observer W&B destination project/entity differs from the campaign')
+        sdk = _load_wandb()
         state = _json(directory / 'observer_state.json', {})
         run_id = old_identity.get('id', uuid4().hex[:16])
         started, elapsed = time.monotonic(), state.get('elapsed_seconds', 0.0)
-        run = sdk.init(project=origin['project'], entity=origin['entity'], id=run_id, resume='allow',
+        run = sdk.init(project=origin['project'], entity=origin['entity'], id=run_id,
+            mode=mode, resume='allow' if mode == 'online' else None,
             name=f'{campaign.name}-suivi-global', group=campaign.name, job_type='campaign_monitor',
             dir=str(directory), config=dict(method='campaign_monitor', campaign=campaign.name,
                 scope='read-only artifact observation; no training or test selection'),
             save_code=False, settings=sdk.Settings(disable_code=True, disable_git=True, console='off', init_timeout=30))
         if run is None:
             raise RuntimeError('W&B observer did not initialize')
-        identity = dict(id=run_id, project=origin['project'], entity=run.entity, url=run.url, mode='online')
-        write_json(directory / 'wandb.json', identity)
-        write_json(directory / 'run.json', dict(method='campaign_monitor', status='running'))
         failed = True
         try:
+            identity = dict(id=run_id, project=origin['project'], entity=run.entity, url=run.url, mode=mode)
+            write_json(directory / 'wandb.json', identity)
+            write_json(directory / 'status.json', dict(method='campaign_monitor', status='running'))
             run.define_metric('observer/observation', hidden=True)
             run.define_metric('*', step_metric='observer/observation', hidden=True)
             if configure_views:
@@ -268,9 +301,7 @@ def observe(campaign, *, follow=False, interval=30.0, configure_views=False):
             failed = snapshot['pipeline_status'] in ('failed', 'interrupted')
             return dict(url=run.url, pipeline_status=snapshot['pipeline_status'])
         finally:
-            write_json(directory / 'run.json', dict(method='campaign_monitor', status='failed' if failed else 'complete',
-                pipeline_status=snapshot['pipeline_status']))
-            run.finish(exit_code=1 if failed else 0)
+            _finish_observer(run, directory, snapshot, failed=failed, primary_error=sys.exc_info()[1])
 
 
 def main(argv=None):

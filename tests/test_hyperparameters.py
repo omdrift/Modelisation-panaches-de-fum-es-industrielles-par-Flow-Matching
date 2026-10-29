@@ -29,7 +29,7 @@ def test_stage_defaults_do_not_inherit_predictor_settings_or_mutate_configuratio
 @pytest.mark.parametrize('override', [
     {'learning_rate': 0}, {'learning_rate': float('nan')}, {'epsilon': True},
     {'weight_decay': -1}, {'betas': [0.9, 1.0]}, {'betas': [True, 0.9]},
-    {'validation_every': 2.5}, {'validation_every': 0}, {'schedule': 'cosine'},
+    {'validation_every': 2.5}, {'validation_every': 0}, {'schedule': 'unknown'},
     {'adversarial_weight': float('inf')}, {'typo_lr': 0.1},
     {'reconstruction_weight': 0, 'perceptual_weight': 0, 'quantization_weight': 0},
 ])

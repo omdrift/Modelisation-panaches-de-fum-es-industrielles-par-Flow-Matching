@@ -134,8 +134,9 @@ def load_protocol(path='configs/scientific_protocol.yaml') -> dict:
         raise ValueError('Protocol v1.1 preserves complete 36-frame clips at the current 64x64 resolution')
     from scientific.segmentation import validate_settings
     validate_settings(cfg['preprocessing'])
-    from scientific.hyperparameters import autoencoder_settings
+    from scientific.hyperparameters import autoencoder_settings, validate_schedule
     autoencoder_settings(cfg)
+    validate_schedule(cfg['training'])
     from scientific.early_stopping import settings as early_stopping_settings
     early_stopping_settings(cfg)
     if cfg['seeds'] != [17, 42, 2026]:
@@ -144,8 +145,15 @@ def load_protocol(path='configs/scientific_protocol.yaml') -> dict:
         raise ValueError('Four realizations and at least two ODE grid points are required')
     if cfg['model']['min_target_index'] != 2 or cfg['model']['mask_source'] != 'alpha' or cfg['model']['autoencoder']['type'] != 'vqgan':
         raise ValueError('Scientific models require RIVER target sampling from the third frame, alpha masks and explicit architecture settings')
-    if cfg['training']['effective_batch_size'] != 16 or (type(cfg['training']['max_updates']) is not int or cfg['training']['max_updates'] < 1) or cfg['training']['autoencoder_seed'] != 42:
+    if cfg['training']['effective_batch_size'] != 16 or (type(cfg['training']['max_updates']) is not int or cfg['training']['max_updates'] < 1) or cfg['training']['autoencoder_seed'] not in cfg['seeds']:
         raise ValueError('Invalid fixed batch, update limit or autoencoder seed')
+    if type(cfg['training'].get('amp', False)) is not bool:
+        raise ValueError('training.amp must be a boolean')
+    architecture = cfg['model']['autoencoder']
+    if (architecture['encoder']['out_channels'] != architecture['vector_quantizer']['embedding_dimension']
+            or architecture['decoder']['in_channels'] != architecture['vector_quantizer']['embedding_dimension']
+            or cfg['model']['vector_field_regressor']['state_size'] != architecture['vector_quantizer']['embedding_dimension']):
+        raise ValueError('Encoder, quantizer, decoder and Flow state dimensions must match')
     if min(cfg['training']['smoke_weight'], cfg['training']['background_weight'], cfg['training']['warmup_updates'], cfg['training']['validation_every']) <= 0:
         raise ValueError('Loss weights and update intervals must be positive')
     if any(not 1 <= cfg['selection'][key] <= maximum for key, maximum in [('validation_windows', 60), ('test_windows_per_split', 200)]):

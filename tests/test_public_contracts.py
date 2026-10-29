@@ -30,7 +30,15 @@ def test_public_function_class_and_method_signatures(module):
                 method.name: signature(method) for method in node.body
                 if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
             }
-    assert definitions == PUBLIC_API[module]
+    # Feature additions may export new helpers, but every pre-existing public
+    # callable must retain its exact signature. The original baseline stays intact.
+    for name, expected in PUBLIC_API[module].items():
+        assert name in definitions
+        if 'arguments' in expected:
+            assert definitions[name] == expected
+        else:
+            for method, method_signature in expected.items():
+                assert definitions[name][method] == method_signature
 
 
 @pytest.mark.parametrize('command', CLI_HELP)

@@ -30,7 +30,7 @@ Chaque point de qualité utilise les mêmes exemples fixes, en mode évaluation.
 | Le modèle généralise-t-il ? | **Écart LPIPS = validation − apprentissage**. Une hausse durable de validation avec baisse en apprentissage est un signal à examiner, pas une preuve automatique. Les dates et les vues peuvent différer. |
 | Que signifient les tendances ? | La pente estime la **variation de LPIPS par 1 000 mises à jour**, sur les cinq dernières validations. Une pente négative indique une baisse de l'erreur ; une pente positive, une hausse. Une pente d'apprentissage négative avec une pente de validation positive appelle un examen ; cette tendance locale peut fluctuer. |
 | Quand l'entraînement s'arrête-t-il ? | Si activée, la **patience** compte les validations sans baisse significative de LPIPS. L'arrêt intervient lorsque le compteur atteint le seuil, après le minimum de mises à jour et la phase initiale ; les valeurs effectives figurent dans la configuration du run. |
-| Que regarder visuellement ? | Les images fixes montrent RGB réel, reconstruction/prédiction, erreur et masque estimé. Vérifier disparition, artefacts de fond et contours. |
+| Que regarder visuellement ? | Les images et animations fixes montrent RGB réel, reconstruction/prédiction et erreur. Le masque estimé complète les diagnostics. Vérifier disparition, artefacts de fond, contours et évolution temporelle. |
 
 Le drapeau booléen « surapprentissage » reste dans les diagnostics enregistrés ; les courbes affichent les pentes numériques. Ce drapeau utilise cinq validations et un seuil exploratoire de 10 %. Il n'arrête pas l'entraînement et ne certifie pas l'absence de surapprentissage. Le meilleur checkpoint minimise la LPIPS de validation ; les tests restent réservés à l'évaluation finale.
 '''
@@ -43,7 +43,11 @@ Le drapeau booléen « surapprentissage » reste dans les diagnostics enregistr�
     else:
         common += '\n**Prédicteur :** la perte d’entraînement et la LPIPS de validation mesurent des objectifs différents. Les réglages exécutés figurent dans `effective_training.json` ; leur présence dans une configuration ne constitue pas une calibration.\n'
         if method.startswith('flow'):
-            common += '\n**Flow Matching :** le VQGAN est gelé. La validation utilise 1 réalisation fixe par fenêtre ; les tests finaux utilisent 4 réalisations, sans sélection de la meilleure. La perte pondérée et la perte uniforme ne se comparent pas directement comme des scores de qualité. NFE, diversité et coût des générations sont exportés lors des tests.\n'
+            common += '''
+**Flow Matching :** le VQGAN est gelé. Le protocole courant utilise 1 réalisation fixe par fenêtre en validation ; une étude peut en déclarer 4 pour ses confirmations. Les tests finaux utilisent 4 réalisations, sans sélection de la meilleure. Consulter la configuration effective et le nombre de réalisations enregistré pour interpréter chaque run.
+
+L'objectif Flow mesure l'erreur de vitesse latente ; la LPIPS mesure la qualité des images générées après décodage. Les diagnostics d'objectif sur apprentissage et validation utilisent des tirages fixes, indépendants des tirages d'entraînement. La perte pondérée et la perte uniforme ne se comparent pas directement comme des scores de qualité. Une baisse de l'objectif ne garantit pas une amélioration des 15 images prédites. NFE, diversité et coût des générations sont exportés lors des tests.
+'''
     return common
 
 
@@ -73,11 +77,16 @@ def section_plan(method: str) -> list[dict]:
         ])
     quality.append(('Patience : validations sans progrès / seuil', ['early_stopping/bad_checks', 'early_stopping/patience']))
     optimization = [('Pertes de reconstruction', ['train/reconstruction', 'train/perceptual']),
-                    ('Quantification et discriminateur', ['train/vq', 'train/discriminator'])] if method == 'vqgan' else [
-                    ('Objectif du prédicteur', ['train/loss'])]
+                    ('Quantification et discriminateur', ['train/vq', 'train/discriminator']),
+                    ('Learning rate générateur / discriminateur', ['train/lr_generator', 'train/lr_discriminator'])] if method == 'vqgan' else [
+                    ('Objectif du prédicteur — mini-lots', ['train/loss']),
+                    ('Learning rate', ['train/lr'])]
+    if method.startswith('flow'):
+        optimization.append(('Objectif Flow ↓ — panneaux fixes', ['train_eval/objective', 'validation/objective']))
     result = [dict(name='Comprendre cet entraînement', open=True, markdown=[reading_guide(method)]),
               dict(name='Qualité et généralisation', open=True, charts=quality),
-              dict(name='Exemples fixes', open=True, media=['validation/errors_and_masks']),
+              dict(name='Exemples fixes', open=True,
+                   media=['validation/errors_and_masks', 'train_eval/animations', 'validation/animations']),
               dict(name='Analyse par date et vue', open=False, regex=[
                   ('LPIPS par journée', r'^validation/by_date/.*/lpips$'),
                   ('LPIPS par caméra et vue', r'^validation/by_view_id/.*/lpips$')]),
@@ -85,6 +94,9 @@ def section_plan(method: str) -> list[dict]:
                   ('Norme des gradients', ['train/gradient_norm_before_clip']),
                   ('Temps par mise à jour', ['performance/update_seconds']),
                   ('Mémoire GPU en octets', ['gpu/allocated_bytes', 'gpu/reserved_bytes']),
+                  ('MSE ↓ — RGB [0,1]', ['train_eval/mse', 'validation/mse']),
+                  ('PSNR ↑ — décibels', ['train_eval/psnr', 'validation/psnr']),
+                  ('SSIM ↑ — similarité structurelle', ['train_eval/ssim', 'validation/ssim']),
               ]),
               dict(name='Sélection et référence', open=False, charts=[
                   ('Validation et référence simple', ['validation/lpips', 'validation/baseline_lpips']),
@@ -155,6 +167,8 @@ def load_sdk():
 
 
 def configure(identity, method, directory, *, apply=False):
+    if identity.get('mode', 'online') != 'online':
+        raise ValueError('Configuring remote W&B views requires online mode')
     api, ws, wr, execute_graphql = load_sdk()
     username = execute_graphql(api, '{viewer{username}}')['viewer']['username']
     variables = dict(entity=identity['entity'], project=identity['project'], username=username)
@@ -223,12 +237,13 @@ def configure(identity, method, directory, *, apply=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--run-directory', required=True, help='Contains wandb.json and run.json')
+    parser.add_argument('--run-directory', required=True, help='Contains wandb.json and run.json (status.json for a campaign observer)')
     parser.add_argument('--apply', action='store_true', help='Create or update the named dashboard after backing up its previous configuration')
     args = parser.parse_args(argv)
     run = Path(args.run_directory)
     identity = json.loads((run / 'wandb.json').read_text())
-    method = json.loads((run / 'run.json').read_text()).get('method', 'vqgan' if run.name == 'autoencoder' else None)
+    metadata_path = run / ('status.json' if run.name == 'campaign_monitor' else 'run.json')
+    method = json.loads(metadata_path.read_text()).get('method', 'vqgan' if run.name == 'autoencoder' else None)
     if method not in ('vqgan', 'simvp', 'flow_alpha', 'flow_uniform', 'campaign_monitor'):
         parser.error('Select a VQGAN or predictor run directory')
     print(json.dumps(configure(identity, method, run.parent / 'dashboard', apply=args.apply), indent=2, ensure_ascii=False))

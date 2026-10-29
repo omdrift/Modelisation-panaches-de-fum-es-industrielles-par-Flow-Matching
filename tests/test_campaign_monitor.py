@@ -1,6 +1,6 @@
 """Campaign observation reads artifacts and never executes a scientific stage."""
-from contextlib import contextmanager
 import copy
+from contextlib import nullcontext
 import fcntl
 import json
 from pathlib import Path
@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from scientific.protocol import file_hash, load_protocol, write_json
+from scientific.protocol import _source_manifest, digest, file_hash, load_protocol, write_json
 
 
 @pytest.fixture
@@ -20,7 +20,7 @@ def campaign(tmp_path):
     cfg = load_protocol()
     (root / 'protocol.yaml').write_text(yaml.safe_dump(cfg))
     write_json(root / 'pipeline.json', dict(status='running', current_stage='train_simvp_17',
-        identity=dict(data=str(data), videos='removed', methods=['simvp', 'flow_uniform', 'flow_alpha'], seeds=[17, 42, 2026]),
+        identity=dict(data=str(data), videos='removed', methods=['simvp', 'flow_uniform', 'flow_alpha'], seeds=[17, 42, 2026], protocol_sha256=digest(cfg)),
         stages={'vqgan': {'status': 'complete', 'seconds': 12.0}, 'train_simvp_17': {'status': 'running'}}))
     write_json(data / 'dataset_manifest.json', dict(statuses={'prepared': 100}, eligible_metadata=150,
         selected={'train': 50, 'val': 60, 'test_dates': 200, 'test_views': 200}))
@@ -220,4 +220,166 @@ def test_transport_failure_is_reported_without_changing_pipeline(campaign, monke
         observe(campaign)
     assert (campaign / 'pipeline.json').read_bytes() == before
     assert runs[0].finished[-1] == {'exit_code': 1}
-    assert json.loads((campaign / 'campaign_monitor/run.json').read_text())['status'] == 'failed'
+    assert json.loads((campaign / 'campaign_monitor/status.json').read_text())['status'] == 'failed'
+
+
+def test_all_dynamic_html_fields_are_escaped(campaign):
+    from tools.monitor_campaign import collect_snapshot, render_status
+    snapshot = collect_snapshot(campaign)
+    malicious = '<img src=x onerror=alert(1)>'
+    snapshot['context_frames'] = snapshot['horizon'] = malicious
+    for row in snapshot['training']:
+        row['seed'] = row['validation_step'] = malicious
+    rendered = render_status(snapshot)
+    assert malicious not in rendered
+    assert '&lt;img' in rendered
+
+
+@pytest.mark.parametrize('failing_file', ['wandb.json', 'status.json'])
+def test_post_init_io_errors_always_finish_sdk(campaign, monkeypatch, failing_file):
+    from tools import monitor_campaign as monitor
+    runs, _ = fake_sdk(monkeypatch)
+    original = monitor.write_json
+
+    def broken_write(path, value):
+        if path.parent.name == 'campaign_monitor' and path.name == failing_file:
+            raise OSError('observer disk unavailable')
+        return original(path, value)
+
+    monkeypatch.setattr(monitor, 'write_json', broken_write)
+    cleanup_warning = pytest.warns(UserWarning, match='cleanup') if failing_file == 'status.json' else nullcontext()
+    with cleanup_warning:
+        with pytest.raises(OSError, match='disk unavailable'):
+            monitor.observe(campaign)
+    assert runs[0].finished[-1] == {'exit_code': 1}
+
+
+def test_cleanup_failure_does_not_mask_the_primary_transport_error(campaign, monkeypatch):
+    from tools import monitor_campaign as monitor
+    runs, _ = fake_sdk(monkeypatch, fail=True)
+    original = monitor.write_json
+    writes = []
+
+    def broken_final_status(path, value):
+        if path.name == 'status.json':
+            writes.append(value)
+            if len(writes) > 1:
+                raise OSError('secondary cleanup failure')
+        return original(path, value)
+
+    monkeypatch.setattr(monitor, 'write_json', broken_final_status)
+    with pytest.warns(UserWarning, match='cleanup'):
+        with pytest.raises(RuntimeError, match='transport failed'):
+            monitor.observe(campaign)
+    assert runs[0].finished[-1] == {'exit_code': 1}
+
+
+@pytest.mark.parametrize('target,value', [('entity', 'another-owner'), ('project', 'another-project')])
+def test_resume_rejects_a_different_wandb_destination_before_init(campaign, monkeypatch, target, value):
+    from tools.monitor_campaign import observe
+    _, calls = fake_sdk(monkeypatch)
+    identity = dict(id='existing-observer', entity='owner', project='plumes', mode='online')
+    identity[target] = value
+    write_json(campaign / 'campaign_monitor/wandb.json', identity)
+    with pytest.raises(ValueError, match='project|entity|destination'):
+        observe(campaign)
+    assert not calls
+
+
+def test_observer_respects_offline_identity(campaign, monkeypatch):
+    from tools.monitor_campaign import observe
+    _, calls = fake_sdk(monkeypatch)
+    identity_path = campaign / 'simvp_17/wandb.json'
+    identity = json.loads(identity_path.read_text()) | {'mode': 'offline'}
+    write_json(identity_path, identity)
+    observe(campaign)
+    assert calls[0]['mode'] == 'offline'
+    assert calls[0]['resume'] is None
+
+
+def test_offline_observer_rejects_remote_workspace_configuration_before_init(campaign, monkeypatch):
+    from tools.monitor_campaign import observe
+    _, calls = fake_sdk(monkeypatch)
+    identity_path = campaign / 'simvp_17/wandb.json'
+    write_json(identity_path, json.loads(identity_path.read_text()) | {'mode': 'offline'})
+    with pytest.raises(ValueError, match='online'):
+        observe(campaign, configure_views=True)
+    assert not calls
+
+
+def test_validation_realization_count_is_read_from_metrics(campaign):
+    from tools.monitor_campaign import collect_snapshot, render_status
+    path = campaign / 'simvp_17/metrics.jsonl'
+    path.write_text(json.dumps({'global_step': 2500, 'validation/lpips': 0.2,
+        'validation/realizations': 4}) + '\n')
+    snapshot = collect_snapshot(campaign)
+    row = next(row for row in snapshot['training'] if row['method'] == 'simvp' and row['seed'] == 17)
+    assert row['realizations'] == 4
+    assert 'Réalisations / fenêtre' in render_status(snapshot)
+
+
+def test_sdk_finish_failure_preserves_primary_exception(campaign, monkeypatch):
+    from tools.monitor_campaign import observe
+    runs, _ = fake_sdk(monkeypatch, fail=True)
+
+    def broken_finish(self, **kwargs):
+        self.finished.append(kwargs)
+        raise OSError('secondary finish failure')
+
+    monkeypatch.setattr(FakeRun, 'finish', broken_finish)
+    with pytest.warns(UserWarning, match='cleanup'):
+        with pytest.raises(RuntimeError, match='transport failed'):
+            observe(campaign)
+    assert runs[0].finished == [{'exit_code': 1}]
+
+
+def test_final_status_io_error_still_finishes_and_is_reported(campaign, monkeypatch):
+    from tools import monitor_campaign as monitor
+    runs, _ = fake_sdk(monkeypatch)
+    original = monitor.write_json
+    writes = []
+
+    def broken_final_status(path, value):
+        if path.name == 'status.json':
+            writes.append(value)
+            if len(writes) > 1:
+                raise OSError('final status write failed')
+        return original(path, value)
+
+    monkeypatch.setattr(monitor, 'write_json', broken_final_status)
+    with pytest.raises(OSError, match='final status write failed'):
+        monitor.observe(campaign)
+    assert runs[0].finished == [{'exit_code': 1}]
+
+
+def test_snapshot_rejects_changed_frozen_protocol(campaign):
+    from tools.monitor_campaign import collect_snapshot
+    path = campaign / 'protocol.yaml'
+    cfg = yaml.safe_load(path.read_text())
+    cfg['evaluation']['horizon'] = 1
+    path.write_text(yaml.safe_dump(cfg))
+    with pytest.raises(ValueError, match='protocol'):
+        collect_snapshot(campaign)
+
+
+def test_observation_does_not_block_a_later_explicit_policy_upgrade(campaign, monkeypatch, tmp_path):
+    from tools.monitor_campaign import observe
+    from tools.enable_early_stopping import enable
+    fake_sdk(monkeypatch)
+    cfg = yaml.safe_load((campaign / 'protocol.yaml').read_text())
+    cfg['training'].pop('early_stopping')
+    (campaign / 'protocol.yaml').write_text(yaml.safe_dump(cfg))
+    before, after = tmp_path / 'before', tmp_path / 'after'
+    for directory, content in ((before, 'old'), (after, 'new')):
+        (directory / 'scientific').mkdir(parents=True)
+        (directory / 'scientific/runner.py').write_text(content)
+    origin = dict(source_sha256=digest(_source_manifest(before)), protocol_sha256=digest(cfg))
+    write_json(campaign / 'simvp_17/run.json', origin | dict(method='simvp', seed=17, status='incomplete'))
+    pilot = json.loads((campaign / 'pilot.json').read_text()) | dict(provenance=origin)
+    write_json(campaign / 'pilot.json', pilot)
+    pipeline = json.loads((campaign / 'pipeline.json').read_text())
+    pipeline['identity'].update(origin)
+    write_json(campaign / 'pipeline.json', pipeline)
+    observe(campaign)
+    assert not (campaign / 'campaign_monitor/run.json').exists()
+    assert enable(campaign, before, source_root=after)['status'] == 'enabled'

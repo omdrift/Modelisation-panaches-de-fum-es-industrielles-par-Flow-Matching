@@ -1,8 +1,8 @@
-# Industrial Plume Forecasting — execution guide
+# Industrial Plume Forecasting — guide d'exécution
 
-Run commands from the repository root in the `smoke-science` environment. The configuration is `configs/scientific_protocol.yaml`; the full experimental design is in [SCIENTIFIC_PROTOCOL.md](SCIENTIFIC_PROTOCOL.md).
+Exécuter les commandes depuis la racine du dépôt dans l'environnement `smoke-science`. Le [protocole](SCIENTIFIC_PROTOCOL.md) fixe la sélection ; le [guide des paramètres et graphiques](TRAINING_DESIGN.md) précise leur interprétation.
 
-## Environment
+## Environnement
 
 ```bash
 conda env create -f environment_scientific.yml
@@ -11,145 +11,89 @@ python -m scientific.cli doctor
 python -m pytest -q
 ```
 
-For an existing environment, use `conda env update -n smoke-science -f environment_scientific.yml`. Check `python -m pip --version` if the interpreter appears incorrect. CUDA training requires a working NVIDIA driver. LPIPS downloads official AlexNet and calibration weights on first use; preload them when working offline.
-
-## Data preparation
+Pour un environnement existant :
 
 ```bash
-python -m scientific.cli inventory --output scientific_data/inventory.json
-python -m scientific.cli download --videos smoke_videos
-python -m scientific.cli prepare \
-  --videos smoke_videos --output scientific_data/smoke \
-  --cache-dir scientific_models/huggingface --device cuda --batch-frames 1
-python -m scientific.cli check-data --data scientific_data/smoke
+conda env update -n smoke-science -f environment_scientific.yml
 ```
 
-Skip `download` when the expected MP4 files already exist. Preparation loads one pinned CLIPSeg model and checks its safetensors fingerprint before creating the dataset. The initial weight download is approximately 603 MB. Add `--local-files-only` for a populated cache, or `--device cpu` for CPU preparation.
+L'étude utilise Optuna 4.6.0. L'installation ciblée est `python -m pip install optuna==4.6.0`. CUDA exige un pilote NVIDIA compatible ; LPIPS charge les poids officiels AlexNet et sa calibration au premier usage. Précharger ces poids pour une exécution hors ligne.
 
-Text conditions are cached and each visual encoding is shared between prompts. `--batch-frames` controls independent frames per inference batch; its default is one. Every source acquisition is retained. The progress bar counts eligible videos present on disk; excluded metadata and missing files are still recorded.
+## Étude complète à partir des NPZ
 
-Outputs:
+Conserver le dossier préparé entier, notamment `dataset_manifest.json`, les manifests de partitions et `clips/*.npz`. Les MP4 supprimés et le cache CLIPSeg ne sont pas requis pour exploiter une préparation complète. La tâche reste 36 images stockées, 64×64 RGB, cinq observations et quinze futurs.
 
-- `clips/*.npz`: source RGB `raw_frames`, segmented RGB `frames`, and soft masks `alpha`, each with 36 time steps at 64×64.
-- `all_windows.jsonl`, `train.jsonl`, `val.jsonl`, `test_dates.jsonl`, `test_views.jsonl`: identifiers, partitions, indices, timestamps and checksums.
-- `preparation_events.jsonl`: source properties, missing videos and rejection reasons.
-- `dataset_manifest.json`: configuration, selections, checksums, CLIPSeg revision and execution details.
-
-Preparation refuses an existing output directory. An interrupted preparation is incomplete; use a new directory and point subsequent commands to that completed dataset. `check-data` reads all selected clips and checks partitions, temporal continuity, array shapes, types and mask bounds.
-
-## Forecast task
-
-Choose `C` and `H` before training, with `C ≥ 2`, `H ≥ 1`, `C+H ≤ 36`. The following example uses five observations and fifteen forecasts:
+La prévisualisation ne crée aucun fichier, ne charge pas Optuna et ne démarre aucun entraînement :
 
 ```bash
-export SMOKE_CONTEXT_FRAMES=5
-export SMOKE_FORECAST_HORIZON=15
+python -m scientific.cli study \
+  --config configs/experiment_study.yaml \
+  --data scientific_data/v1_2_clipseg_fast \
+  --output runs_scientific/plume_study \
+  --dry-run
 ```
 
-Use these same values throughout the campaign. Stored clips remain 36 frames long. RIVER training samples a target, its preceding reference and an earlier condition; evaluation supplies only the chosen observations.
-
-For the complete study, use the single orchestrator. It launches preparation, automatic checks, the pilot, VQGAN, all predictor seeds, both test splits and the summary sequentially:
-
-```bash
-python -m scientific.cli --context-frames 5 --horizon 15 pipeline \
-  --videos smoke_videos --data scientific_data/smoke \
-  --campaign runs_scientific/smoke \
-  --cache-dir scientific_models/huggingface \
-  --wandb --wandb-project smoke-science
-```
-
-Add `--dry-run` to print the ordered matrix (45 stages) without starting work. Add `--resume` after an interruption. If the reference configuration has changed, also use `--protocol runs_scientific/smoke/protocol.yaml` to select the original frozen settings. The pipeline verifies hashes before reusing any completed stage and writes `pipeline.json`, a frozen `protocol.yaml`, and one log per stage.
-
-### Starting from prepared NPZ files
-
-A completed dataset can be reused after removal of the source MP4 directory. Keep the complete prepared directory: NPZ files, `dataset_manifest.json`, and the partition manifests. No CLIPSeg cache is needed to reuse these outputs:
-
-```bash
-python -m scientific.cli --context-frames 5 --horizon 15 pipeline \
-  --data scientific_data/smoke --campaign runs_scientific/smoke \
-  --wandb --wandb-project smoke-science
-```
-
-The preparation stage is reused automatically. Its specification must match the requested protocol; `check-data` still verifies hashes, shapes, masks, temporal continuity and disjoint partitions before the pilot or training. Incomplete or incompatible prepared data is rejected. A completed preparation also permits campaign resume without the original `--videos` argument; its recorded origin is retained. Source MP4s and their original path are needed to resume an interrupted preparation; `--videos` defaults to `smoke_videos`. Initial preparation or changing segmentation also requires MP4s. Reusing data does not reuse model weights from another campaign.
-
-## Hyperparameter calibration
-
-The supplied values are exploratory. The pipeline does not automatically select a learning rate. The [training design](TRAINING_DESIGN.md) documents their origins, the controlled calibration procedure and chart interpretation.
-
-`python tools/plan_calibration.py --data scientific_data/smoke --output runs_scientific/calibration_vqgan_lr --learning-rates 0.00005 0.0001 0.0002 --updates 15000` registers three equal-update VQGAN candidates without starting them. Review `study.json` and `candidate_*.yaml`; `bash runs_scientific/calibration_vqgan_lr/commands.sh` executes them sequentially when intended. Every candidate starts in a separate directory with seed 42, fixed data and the same image sampling schedule. Test scores are excluded from selection. The declared duration limits the comparison; it does not establish eventual convergence.
-
-VQGAN settings live in `training.autoencoder`; common LR, weight decay, warmup and validation interval apply to predictors. Each run exports `effective_training.json` and adds that description to its W&B configuration. Changing settings requires a separate experiment, not a checkpoint resume.
-
-## Resource probe and VQGAN
-
-```bash
-python -m scientific.cli \
-  --context-frames "$SMOKE_CONTEXT_FRAMES" --horizon "$SMOKE_FORECAST_HORIZON" \
-  pilot --campaign runs_scientific/smoke
-
-python -m scientific.cli \
-  --context-frames "$SMOKE_CONTEXT_FRAMES" --horizon "$SMOKE_FORECAST_HORIZON" \
-  autoencoder --campaign runs_scientific/smoke --data scientific_data/smoke
-```
-
-The pilot uses synthetic tensors to measure memory and choose micro-batches; it does not estimate predictive quality. `training.max_updates` caps the number of optimizer updates. Effective batch size is sixteen, implemented through accumulation. VQGAN uses reconstruction, calibrated LPIPS, VQ and adversarial losses, and selects `best.pth` using validation LPIPS.
-
-## Predictor training
-
-```bash
-for method in simvp flow_uniform flow_alpha; do
-  for seed in 17 42 2026; do
-    python -m scientific.cli \
-      --context-frames "$SMOKE_CONTEXT_FRAMES" --horizon "$SMOKE_FORECAST_HORIZON" \
-      train --campaign runs_scientific/smoke --data scientific_data/smoke \
-      --method "$method" --seed "$seed" \
-      --autoencoder runs_scientific/smoke/autoencoder/best.pth \
-      --pilot runs_scientific/smoke/pilot.json || break 2
-  done
-done
-```
-
-SimVP uses RGB directly; Flow Matching uses the frozen common VQGAN. Checkpoints contain parameters, optimizers, scheduler, random states and provenance. A selected model is complete after a validated early-stop decision or the maximum updates and final validation. Commands sharing a campaign directory are protected against concurrent writes.
-
-## Early stopping and existing campaigns
-
-New campaigns declare `training.early_stopping`: enabled, patience ten validations, minimum decrease 0.0001 LPIPS, and a minimum of 5,000 updates before counting patience. Predictor warmup and VQGAN adversarial activation must also have finished. A plateau preserves the raw minimum in `best.pth`, marks the run complete, and lets the pipeline continue. The actual update count and `termination_reason` are recorded; they can differ between models and seeds. Fixed-exposure calibration candidates explicitly disable stopping.
-
-An already running Python process does not reload this code. Frozen protocols without the new section keep their previous behavior. To opt an older campaign in, stop the pipeline with Ctrl+C and wait for the checkpoint and process exit. Then use a source snapshot whose fingerprint matches the campaign:
-
-```bash
-python tools/enable_early_stopping.py \
-  --campaign runs_scientific/smoke \
-  --previous-source-root /path/to/original/source/snapshot
-
-python -m scientific.cli --protocol runs_scientific/smoke/protocol.yaml \
-  pipeline --data scientific_data/smoke --campaign runs_scientific/smoke \
-  --resume --wandb
-```
-
-The upgrade never starts training or rewrites weights. It checks both campaign locks, records the complete before/after protocol and source manifests in `maintenance.json`, and changes only the early-stopping policy. The supervisor's original identity is preserved in the receipt; only its protocol and source fingerprints are updated. Unsupported source changes, another maintenance transition, or test results already present cause rejection. Patience starts on resume, anchored to the saved best score; it does not retrospectively declare an earlier stop. A resumed completed run remains immutable. The transition must be reported as a change during the study, not a preregistered stopping rule. Subsequent resumes use the upgraded frozen protocol.
-
-## Monitoring and recovery
+Pour lancer ensuite tous les entraînements et évaluations dans l'ordre déclaré :
 
 ```bash
 python -m wandb login
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+python -m scientific.cli study \
+  --config configs/experiment_study.yaml \
+  --data scientific_data/v1_2_clipseg_fast \
+  --output runs_scientific/plume_study \
+  --wandb
 ```
 
-Add `--wandb --wandb-project smoke-science` to either training command. The run URL appears in the terminal. `--wandb-entity` and `--wandb-name` customize its destination and display name. `--wandb-mode offline` saves local sessions without cloud synchronization.
+Sans `--wandb`, les journaux structurés et les sorties locales restent disponibles. Ajouter `--resume` à la même commande pour reprendre une étude. Une reprise exige les mêmes données, sources, configurations et empreintes des artefacts terminés ; changer un réglage nécessite un nouveau dossier d'étude.
 
-Metrics include generator/discriminator losses, reconstruction, perceptual and VQ terms, validation LPIPS, learning rates, progress, update time and CUDA memory. Validation media compare real RGB on the left with reconstruction or prediction on the right. Defaults are `--wandb-log-every 25` and `--wandb-media-every 250`; images are produced at eligible validation steps and final validation. Before the discriminator activates, its loss is zero and its active flag is false.
+La séquence contient au maximum 29 entraînements : six VQGAN exploratoires, six confirmations VQGAN, deux prévisions comparant les VQGAN, six Flow exploratoires, six confirmations Flow et trois Flow pondérés. Les explorations et prévisions comparatives ont un plafond de 15 000 mises à jour ; les confirmations et la variante pondérée de 50 000. Chaque run démarre d'une nouvelle initialisation contrôlée. Les graines de confirmation sont 17, 42 et 2026.
 
-Each validation also computes diagnostic metrics on a fixed training panel in inference mode. VQGAN uses up to 60 training clips, one image per clip; predictors use up to 8 clips to limit additional autoregressive generation. Training clips are ranked by seeded identifier hashes. The validation panel and the primary checkpoint-selection LPIPS remain unchanged.
+Les candidats croisent LR `5e-5`, `1e-4`, `2e-4` et scheduler constant/cosinus. Le cosinus termine à 10 % du LR initial. Le lot effectif reste 16 ; les micro-lots et l'accumulation adaptent l'occupation mémoire.
 
-### Compact workspace
+Les audits de recherche lisent train et validation seulement. Les scores et images de test restent réservés jusqu'à `final_selection.json`, qui fige les configurations et empreintes retenues. L'audit final et les évaluations des deux partitions de test interviennent ensuite. Une anomalie de partition est rapportée sans déplacement automatique d'images.
 
-An open interpretation card explains the axes, units, useful signals and limitations. The main VQGAN section contains seven line charts: train/validation/best LPIPS, train/validation smoke MSE, train/validation background MSE, LPIPS gap, codebook perplexity, fraction of codes used, and early-stopping patience against its threshold. The next section contains fixed reconstruction/error/mask examples. Date/view analysis, optimization/resources, and selection/baseline diagnostics are collapsed. Date and view metrics share two charts instead of producing one panel per group. Predictor layouts omit VQGAN codebook charts.
+### Sorties de l'étude
 
-All charts use optimizer `global_step` without smoothing. Counters such as valid frames, assignments and window counts remain available in local JSON and recorded W&B data, without automatic panels. Logging hides metrics from automatic plots by default and explicitly exposes a small set of quality signals. The named workspace disables automatic panel creation. Changing logging metadata alone does not reorganize an already saved workspace.
+| Fichier ou dossier | Contenu |
+|---|---|
+| `study.json` | Identité et progression des étapes |
+| `optuna.sqlite3` | Essais, paramètres, résultats intermédiaires et pruning |
+| `experiments.csv` | Tableau comparatif des essais et états |
+| `report.json`, `report.md` | Rapport automatique et décisions |
+| `runs/<identifiant>/protocol.yaml` | Configuration résolue de chaque run |
+| `runs/<identifiant>/autoencoder/` ou dossier de prédicteur | Métriques, diagnostics, médias et checkpoints |
+| `final_selection.json` | Sélection gelée avant consultation du test |
+| `evaluation/` | Métriques, prédictions et médias finaux |
 
-The selection section plots the numerical training and validation LPIPS slopes, measured per 1,000 optimizer updates over the last five validations. Negative slopes mean decreasing error; positive slopes mean increasing error. The boolean `generalization/possible_overfit` stays in recorded diagnostics and is not plotted as a numerical line. The interpretation card explains these local trends and their limits.
+Les maxima ne sont pas des durées en heures. Le coût dépend notamment du GPU, des validations autorégressives et des quatre réalisations des confirmations. Mesurer les temps sur le matériel effectif avant d'annoncer une échéance.
 
-The optional editor uses a separate environment so its SDK does not change the frozen training runtime:
+## Validation et arrêt
+
+| Modèle dans l'étude | Intervalle de validation | Patience |
+|---|---:|---:|
+| VQGAN | 250 mises à jour | 10 validations |
+| Flow | 2 500 mises à jour | 4 validations |
+
+Le comptage commence après 5 000 mises à jour et la phase initiale. Une amélioration significative doit dépasser `1e-4` LPIPS. `best.pth` garde indépendamment le minimum brut. Une fin sur plateau est une fin complète ; une interruption ou un échec ne l'est pas.
+
+Les explorations Flow utilisent une réalisation fixe par fenêtre. Les confirmations, prévisions comparant les VQGAN et tests utilisent la moyenne de quatre réalisations, sans retenir la meilleure. Les métriques enregistrent le nombre effectif.
+
+Le pruning médian concerne uniquement l'exploration, après trois essais terminés et 7 500 mises à jour. Les confirmations ne sont pas prunées par comparaison avec d'autres essais. Les essais incomplets, prunés, non finis ou en échec restent visibles dans les rapports et ne sont pas promus comme finalistes terminés.
+
+## Images et monitoring
+
+Les panneaux fixes train et validation utilisent jusqu'à 60 fenêtres chacun. Huit identifiants par partition sont réservés aux illustrations. VQGAN produit les reconstructions des 36 images ; Flow présente les cinq observations et les quinze futurs. PNG et GIF conservent les comparaisons réel/prédiction/erreur. Les illustrations de test sont exportées après gel de la sélection.
+
+Les métriques locales sont dans `metrics.jsonl`. Chaque validation exporte les mesures détaillées, identifiants et couvertures régionales sous `diagnostics/`. Le graphique local de synthèse et les rapports permettent une lecture sans service externe.
+
+W&B sépare VQGAN, Flow uniforme et Flow pondéré. Les courbes montrent qualité train/validation, meilleur LPIPS, patience, codebook VQGAN, objectifs Flow fixes, LR, gradients, ressources et tendances. Les compteurs détaillés restent enregistrés sans générer un graphique pour chaque date, vue ou nombre d'images.
+
+L'objectif Flow mesure une erreur de vitesse dans l'espace latent ; la LPIPS mesure les images décodées et commande la sélection. La perte d'un mini-lot est distincte des objectifs évalués sur panneaux fixes. Le [guide de lecture](TRAINING_DESIGN.md#interprétation-des-graphiques) précise unités et limites.
+
+### Vues W&B
+
+L'éditeur de tableaux utilise un environnement séparé :
 
 ```bash
 python -m venv .venv-dashboard
@@ -158,93 +102,75 @@ python -m venv .venv-dashboard
   --run-directory runs_scientific/smoke/autoencoder --apply
 ```
 
-Omit `--apply` to inspect the plan. The editor requires the existing W&B login and a run directory containing `wandb.json` and `run.json`. It creates or updates the current user's named view `Suivi scientifique - VQGAN` (or the selected predictor method), filtered to that method. The returned URL opens this view directly. It does not create a separate experiment run. Named views keep the curated layout separate from automatic or personal views that another browser tab may save concurrently.
+`--run-directory` désigne le dossier d'un run existant contenant `wandb.json` et `run.json`. Pour l'observateur de campagne, il contient `wandb.json` et `status.json`. Omettre `--apply` affiche le plan de présentation, avec lecture du projet W&B en ligne. Une identité hors ligne refuse la configuration des vues distantes avant tout contact réseau.
 
-Before a save, `<campaign>/dashboard/workspace_before_*.json` records the previous view, or `null` for a new view. Updates submit the existing view identity and timestamp. An independent API read verifies persistence; `<campaign>/dashboard/workspace_<method>.json` records the result and URL. Existing named-view filters and run selection are preserved during layout updates. Histories, checkpoints and training processes are preserved. The layout can be changed while training is active.
+La vue nommée est filtrée par méthode, avec guide d'interprétation, panneaux de qualité et exemples fixes ; les analyses détaillées sont repliées. L'éditeur conserve les filtres et sélections existants, sauvegarde la vue précédente puis vérifie la persistance. Il ne réécrit ni l'historique ni les poids.
 
-The design uses W&B's documented [metric visibility and custom axes](https://docs.wandb.ai/ref/python/experiments/run/), [multi-series line plots](https://docs.wandb.ai/guides/app/features/panels/line-plot/reference), and the official [Workspaces SDK](https://github.com/wandb/wandb-workspaces). The pinned SDK creates named views and serializes panels; its GraphQL transport updates an existing owned view after a local backup. The pinned API was verified against the configured service.
-
-### Recorded diagnostics
-
-| WandB series | Meaning |
-|---|---|
-| `train_eval/lpips`, `validation/lpips` | Same perceptual metric, fixed panels, no data augmentation or dropout |
-| `generalization/lpips_gap` | Validation minus training-panel LPIPS; descriptive, not a statistical test |
-| `validation/smoke_mse`, `validation/background_mse` | Errors on estimated smoke and background regions; absent regions remain missing |
-| `validation/baseline_lpips` | Black-image reconstruction baseline for VQGAN; persistence baseline for predictors |
-| `validation/by_date/*`, `validation/by_view_id/*` | Performance by acquisition date and camera/view |
-| `validation/codebook/*`, `validation/smoke_codebook/*` | VQ perplexity, active codes, used fraction and number of assignments |
-| `train/gradient_norm_before_clip` | Gradient norm before the existing clipping operation |
-| `selection/best_step`, `selection/updates_since_best` | Selected validation checkpoint and time since its last improvement |
-| `early_stopping/bad_checks`, `early_stopping/patience` | Completed eligible validations without a significant improvement and the stopping threshold |
-| `early_stopping/stopped` | Persisted plateau decision; separate from the advisory overfitting flag |
-
-`generalization/possible_overfit` is available after five diagnostic validations. It is an advisory flag when the fitted training LPIPS slope is negative, the validation slope is positive, and current validation LPIPS exceeds the best value by more than 10%. This heuristic does not demonstrate overfitting, stop training, reject a checkpoint or change model selection. Train/validation distribution differences and noisy validation scores can produce similar patterns.
-
-Per-image measurements, panel identifiers, mask-region coverage and codebook assignment counts are summarized in `<run>/diagnostics/step_<update>.json`. These files contain no model weights. The selected checkpoint carries `best_diagnostics` when diagnostics were available at selection. A local `diagnostics/summary.png` is generated at training completion. Four-column validation media display true RGB, prediction, absolute error and estimated mask.
-
-A saved VQGAN checkpoint can also be inspected without resuming training:
+Pour observer les artefacts d'une campagne `pipeline` existante :
 
 ```bash
-python -m scientific.cli --protocol runs_scientific/smoke/protocol.yaml \
-  inspect-autoencoder --campaign runs_scientific/smoke \
-  --data scientific_data/smoke \
-  --checkpoint runs_scientific/smoke/autoencoder/best.pth
+.venv-dashboard/bin/python tools/monitor_campaign.py \
+  --campaign runs_scientific/smoke --follow --configure-views
 ```
 
-Inspection reads only the training and validation partitions. It writes `inspection.json`, reconstruction/error panels and a diagnostic plot under `runs_scientific/smoke/inspection/vqgan_step_<update>/`. It does not modify the checkpoint or evaluate forecasting. Existing inspection outputs require a new `--output` directory.
+Cet observateur lit l'état sans lancer d'entraînement et utilise son propre verrou. Il respecte le mode hors ligne de la campagne ; dans ce cas, omettre `--configure-views`. Un test incomplet reste indiqué comme tel. Les erreurs du suivi ne modifient pas l'état d'entraînement.
 
-Scalar output is always kept in `<run>/metrics.jsonl`. WandB identity is stored in `<run>/wandb.json`, and session data in `<run>/tracking/`. A compatible online restart reuses its run ID; offline restarts create separate local sessions. Charts use optimizer `global_step` as their axis.
+## Checkpoints, reprise et fine-tuning
 
-Recovery retains the two newest numbered checkpoints and the validation-selected `best.pth`. A checkpoint is committed by atomic replacement; partial files from failed writes are removed. Rotation occurs only after a new checkpoint has been written successfully. Additional temporary space for one complete checkpoint is required during serialization and best-checkpoint updates.
+Pendant un entraînement, la rotation conserve deux checkpoints numérotés récents et `best.pth`. Les écritures sont atomiques ; la rotation suit une sauvegarde réussie. Prévoir l'espace temporaire nécessaire à un checkpoint complet. Après clôture de l'étude, les poids sélectionnés et preuves expérimentales restent conservés ; les finalistes gardent leurs états complets. Les médias récents, du meilleur checkpoint et finaux sont retenus sans accumulation de chaque aperçu intermédiaire.
 
-Resume compatibility checks the actual Python sources, dataset, protocol, seed, model artifacts and runtime. Git commit metadata and documentation diffs are retained as provenance but do not block an otherwise compatible resume. A training-preserving I/O or observational-monitoring maintenance patch for an existing campaign requires an explicit local `maintenance.json` binding its reviewed source fingerprints to the frozen protocol; unrelated source or configuration changes remain rejected.
+Après la clôture durable de chaque essai, les copies numérotées de récupération sont retirées. Les explorations terminées conservent `weights.pth` avec un reçu de rétention ; les finalistes conservent leur `best.pth` complet. La reprise de l'étude réutilise le registre et les empreintes des essais terminés. Une reprise exacte de boucle concerne les essais interrompus, dont les checkpoints de récupération sont conservés.
 
-After a clean interruption, repeat the training command with `--resume latest`, or give `--resume <checkpoint_path>`. The same sources, configuration, data, seed and referenced artifacts are required. A process must be restarted to load source changes. Monitoring preserves the training RNG state; no checkpoint restores metrics that were never recorded.
+Un pilote VQGAN synthétique mesure trois mises à jour adversariales en FP32 avant l'entraînement ; les pilotes prédictifs mesurent ensuite débit et mémoire. Le temps de validation, les animations et les exports s'ajoutent aux estimations issues du seul débit d'optimisation.
 
-## Evaluation
+Les checkpoints restaurent modèle, optimiseurs, schedulers, RNG et scaler si `training.amp` est activé. La précision mixte est désactivée par défaut. L'arrêt anticipé et les validations en attente sont persistés. La reprise d'un run terminé ne change pas son résultat.
+
+Un fine-tuning est un nouveau run avec un parent identifié. Il ne s'effectue pas en changeant le LR d'une reprise exacte. Dans une configuration dédiée :
+
+```yaml
+training:
+  init_from:
+    path: /chemin/vers/le/checkpoint_parent.pth
+    reset: [optimizer, scheduler, rng, early_stopping]
+```
+
+Le chargement des poids doit être strictement compatible. Pour un parent VQGAN sans discriminateur, ajouter explicitement `discriminator` aux composants réinitialisés. Les initialisations parentes et réinitialisations sont enregistrées. Cette option ne remplace pas les nouvelles initialisations de la comparaison principale.
+
+## Préparer un nouveau dataset
 
 ```bash
-for method in persistence optical_flow simvp flow_uniform flow_alpha; do
-  for seed in 17 42 2026; do
-    for split in test_dates test_views; do
-      extra=()
-      if [ "$method" != persistence ] && [ "$method" != optical_flow ]; then
-        extra=(--checkpoint "runs_scientific/smoke/${method}_${seed}/best.pth" \
-               --autoencoder runs_scientific/smoke/autoencoder/best.pth)
-      fi
-      python -m scientific.cli \
-        --context-frames "$SMOKE_CONTEXT_FRAMES" --horizon "$SMOKE_FORECAST_HORIZON" \
-        evaluate --campaign runs_scientific/smoke --data scientific_data/smoke \
-        --method "$method" --seed "$seed" --split "$split" "${extra[@]}" || break 3
-    done
-  done
-done
+python -m scientific.cli inventory --output scientific_data/inventory.json
+python -m scientific.cli download --videos smoke_videos
+python -m scientific.cli prepare \
+  --videos smoke_videos --output scientific_data/smoke \
+  --cache-dir scientific_models/huggingface --device cuda --batch-frames 1
 ```
 
-This example uses Bash. Deterministic methods are recorded under the three seed identifiers for paired comparisons; this does not create independent realizations. Flow Matching produces four realizations per clip, all included in the reported mean.
+La préparation utilise CLIPSeg et un raffinement spatial. `--batch-frames` règle le lot de calcul d'images indépendantes ; il ne change pas les 36 acquisitions retenues. `--local-files-only` utilise un cache rempli. Une nouvelle segmentation exige les sources MP4 ; une préparation complète reste exploitable après leur suppression.
 
-Each evaluation exports `metrics.csv`, `runtime.csv`, `evaluation.json`, NPZ predictions with checksums and fixed qualitative panels. Evaluation refuses existing output. To retry an incomplete evaluation, repeat its command with `--retry-incomplete`; the failed attempt is kept separately and the complete fixed panel is regenerated.
+La commande `check-data` réalise un contrôle complet, y compris la lecture des clips de test. Pour la recherche contrôlée, laisser `study` limiter d'abord les audits à train/validation ; utiliser le contrôle complet après gel de la sélection.
 
-## Analysis
+## Campagne à configuration fixe
+
+La commande `pipeline` orchestre préparation ou réutilisation des données, vérifications, pilote synthétique, VQGAN, références apprises, tests et synthèse. Elle reste distincte de la recherche automatique :
 
 ```bash
-python -m scientific.cli \
-  --context-frames "$SMOKE_CONTEXT_FRAMES" --horizon "$SMOKE_FORECAST_HORIZON" \
-  summarize --inputs runs_scientific/smoke/evaluation/* \
-  --output runs_scientific/smoke/analysis
+python -m scientific.cli --context-frames 5 --horizon 15 pipeline \
+  --data scientific_data/v1_2_clipseg_fast \
+  --campaign runs_scientific/smoke \
+  --wandb --wandb-project smoke-science
 ```
 
-Outputs include `summary.json`, `horizons.csv`, `quality_cost.csv`, horizon curves, quality/cost plots and `failure_review.csv`. Aggregation checks identity and complete window/horizon/realization coverage. It rejects injected test metrics, non-finite values and duplicated rows. Partial campaigns are explicitly labeled.
+Ajouter `--dry-run` pour la liste des étapes, `--resume` pour reprendre. Lors d'une reprise, sélectionner si nécessaire le protocole figé avec `--protocol runs_scientific/smoke/protocol.yaml` avant le sous-commande `pipeline`. Ses paramètres par défaut, dont les intervalles de validation, sont définis dans `configs/scientific_protocol.yaml` ; l'étude fournit ses propres réglages explicitement.
 
-Preserve the configuration, source revision, environment, manifests, selected weights and raw metrics with a published result. Choose displayed horizons and qualitative samples before examining test performance.
+Les commandes individuelles `pilot`, `autoencoder`, `train`, `inspect-autoencoder`, `evaluate` et `summarize` restent disponibles. `inspect-autoencoder` lit train/validation sans modifier les poids. Les tests réservés ne doivent pas être lancés manuellement pour départager des candidats.
 
-## Segmentation benchmark
+## Vérifications logicielles
 
 ```bash
-python tools/benchmark_clipseg.py \
-  --input-npz scientific_data/smoke/clips/VIDEO_ID_0000.npz \
-  --output runs_scientific/clipseg_benchmark.json --device cuda
+python -m pytest -q
+python -m compileall -q scientific model training lutils tools tests
+git diff --check
 ```
 
-Replace the input with an existing clip. The tool compares the standard HF forward pass with shared visual encodings and frame batches 1/4/8. It synchronizes CUDA, excludes warm-up, repeats measurements and checks score/mask differences. Input shape is recorded; comparisons should use the same shape, device and numerical settings. Timing excludes model loading, video decoding, spatial filtering and file compression.
+Ces vérifications utilisent des fixtures et des exécutions CPU courtes. Elles n'entraînent pas automatiquement la campagne GPU et ne constituent pas des mesures de qualité prédictive sur RISE.

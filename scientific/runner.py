@@ -15,7 +15,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch import nn
 
 from lutils.dict_wrapper import DictWrapper
 from model.model import Model
@@ -27,6 +26,9 @@ from scientific.monitoring import gpu_metrics, image_panel, error_panel, preserv
 from scientific.diagnostics import reconstruction_snapshot, forecast_snapshot, export_snapshot, selection_details, plot_history
 from scientific.hyperparameters import autoencoder_settings, training_description
 from scientific.early_stopping import EarlyStopping, completion_valid
+from scientific.training_control import (scheduler_for, scaler_for, autocast_for, optimizer_step,
+    fine_tune, autoencoder_protocol, study_pruned, objective_snapshot, optimizer_steps,
+    UpdateTransaction, OptimizerCommitError)
 from scientific.protocol import digest, file_hash, write_json, LEARNED, forecast_task, sources_compatible, _source_manifest, _protocols_compatible, _early_stopping_upgrade
 from training.checkpoints import capture_rng_state, restore_rng_state, save_checkpoint, load_checkpoint, atomic_save, copy_checkpoint, latest_checkpoint, CheckpointWriteError
 
@@ -231,6 +233,21 @@ def validation_score(model, method, dataset, metric, cfg, device, *, return_snap
     return snapshot if return_snapshot else snapshot.score
 
 
+def _export_sequence_media(run, step, method, cfg, train_snapshot, val_snapshot, improved, final, monitor):
+    if not cfg.get('diagnostics', {}).get('export_sequences', False):
+        return
+    from scientific.visualizations import export_panel_media
+    for split, snapshot in (('train_eval', train_snapshot), ('validation', val_snapshot)):
+        paths = export_panel_media(run, step, method, snapshot, split,
+            context_frames=forecast_task(cfg)[0], best=improved, final=final)
+        if monitor is not None and hasattr(monitor, 'log_media'):
+            # All eight fixed examples are retained locally; one animation per
+            # partition keeps the main workspace small and interpretable.
+            gifs = paths.get('gifs', [])
+            if gifs:
+                monitor.log_media(step, {f'{split}/animations': gifs[0]})
+
+
 def profile(cfg, output, device):
     """Synthetic TRAIN-ONLY throughput probe: no quality result is inferred."""
     context, horizon = forecast_task(cfg)
@@ -286,6 +303,93 @@ def profile(cfg, output, device):
     return result
 
 
+def _predictor_update(model, optimizer, scaler, training, seed, step, micro, method, cfg, device, report):
+    with UpdateTransaction(model) as transaction:
+        update_losses, ratios = [], []
+        optimizer.zero_grad(set_to_none=True)
+        for offset in range(0, 16, micro):
+            frames, alpha = batch_at(training, seed, step, offset, micro, device)
+            with autocast_for(cfg, device):
+                loss, ratio = loss_for(model, method, frames, alpha, cfg)
+            if not torch.isfinite(loss):
+                raise FloatingPointError('Non-finite training loss')
+            scaler.scale(loss / (16 // micro)).backward()
+            if report:
+                update_losses.append(loss.detach())
+            if ratio is not None:
+                ratios.append(ratio)
+        gradient_norm = optimizer_step(optimizer, parameters(model, method), scaler, 1)
+        scaler.update()
+        if gradient_norm is None:
+            return None
+        transaction.commit()
+        return update_losses, ratios, gradient_norm
+
+
+def _record_amp_retry(run, step, scaler, skipped, retries, monitor):
+    record_metrics(run, step, {'train/amp_scale': scaler.get_scale(),
+        'train/amp_skipped_updates': skipped, 'train/amp_consecutive_retries': retries}, monitor)
+    # Repeated invalid unscaled gradients can reflect a genuinely broken
+    # objective. Bound recovery rather than looping after the scale underflows.
+    if retries >= 32 or not math.isfinite(scaler.get_scale()) or scaler.get_scale() <= 0:
+        raise FloatingPointError('AMP gradients remained non-finite after bounded scaler recovery; update was not applied')
+
+
+def _autoencoder_update(model, discriminator, optimizer, optimizer_d, scaler, metric, training, step, cfg, settings, device, report):
+    from torch.nn import functional as F
+
+    with UpdateTransaction(model, discriminator) as transaction:
+        scalars = {key: [] for key in ('generator', 'reconstruction', 'perceptual', 'vq', 'adversarial', 'discriminator')}
+        optimizer.zero_grad(set_to_none=True)
+        optimizer_d.zero_grad(set_to_none=True)
+        for parameter in discriminator.parameters():
+            parameter.requires_grad_(False)
+        discriminator_batches = []
+        active = step >= cfg['training']['discriminator_start']
+        for offset in range(16):
+            frames, _ = batch_at(training, cfg['training']['autoencoder_seed'], step, offset, 1, device)
+            image = frames[:, (step * 17 + offset) % cfg['task']['clip_frames']]
+            with autocast_for(cfg, device):
+                result = model(image)
+                reconstruction = (result.reconstructed_images - image).square().mean()
+                perceptual = metric(result.reconstructed_images, image).mean()
+                quantization = result.vq_loss.mean()
+                loss = settings['reconstruction_weight'] * reconstruction + settings['perceptual_weight'] * perceptual + settings['quantization_weight'] * quantization
+                adversarial = image.new_zeros(())
+                if active:
+                    adversarial = discriminator(result.reconstructed_images).mean()
+                    loss = loss - settings['adversarial_weight'] * adversarial
+            if not torch.isfinite(loss):
+                raise FloatingPointError('Non-finite autoencoder loss')
+            scaler.scale(loss / 16).backward()
+            if report:
+                for key, value in [('generator', loss), ('reconstruction', reconstruction), ('perceptual', perceptual), ('vq', quantization), ('adversarial', -adversarial)]:
+                    scalars[key].append(value.detach())
+            if active:
+                discriminator_batches.append((image.detach(), result.reconstructed_images.detach()))
+        for parameter in discriminator.parameters():
+            parameter.requires_grad_(True)
+        groups = [(optimizer, model.parameters(), settings['gradient_clip_norm'])]
+        if active:
+            for real, generated in discriminator_batches:
+                with autocast_for(cfg, device):
+                    loss_d = (F.relu(1 - discriminator(real)).mean() + F.relu(1 + discriminator(generated)).mean()) / 2
+                if not torch.isfinite(loss_d):
+                    raise FloatingPointError('Non-finite discriminator loss')
+                scaler.scale(loss_d / 16).backward()
+                if report:
+                    scalars['discriminator'].append(loss_d.detach())
+            groups.append((optimizer_d, discriminator.parameters(), float('inf')))
+        # Check both unscaled gradient sets before either optimizer can change
+        # parameters. An AMP overflow discards the entire joint update.
+        gradient_norms = optimizer_steps(groups, scaler)
+        scaler.update()
+        if gradient_norms is None:
+            return None
+        transaction.commit()
+        return scalars, gradient_norms[0]
+
+
 def train_predictor(cfg, root, method, seed, ae_path, pilot_path, run, device, resume=None, monitor=None):
     forecast_task(cfg)
     pilot = json.loads(Path(pilot_path).read_text())
@@ -299,15 +403,19 @@ def train_predictor(cfg, root, method, seed, ae_path, pilot_path, run, device, r
         raise ValueError('Invalid frozen pilot update or micro-batch count')
     training, validation = WindowDataset(root, 'train'), WindowDataset(root, 'val')
     if method.startswith('flow'):
-        validate_artifact(ae_path, cfg, root, 'vqgan')
+        validate_artifact(ae_path, autoencoder_protocol(cfg), root, 'vqgan')
     seed_all(seed)
     model = model_for(cfg, method, ae_path).to(device)
     optimizer = torch.optim.AdamW(parameters(model, method), lr=cfg['training']['learning_rate'], weight_decay=cfg['training']['weight_decay'])
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda s: min(1.0, (s + 1) / cfg['training']['warmup_updates']))
+    scheduler = scheduler_for(optimizer, cfg, cfg['training'], warmup=cfg['training']['warmup_updates'])
+    scaler = scaler_for(cfg, device)
     metric = build_lpips(device)
     run = Path(run)
     run.mkdir(parents=True, exist_ok=True)
     metadata = provenance(cfg, root) | dict(method=method, seed=seed, autoencoder_sha256=file_hash(ae_path) if method.startswith('flow') else None, pilot_sha256=file_hash(pilot_path))
+    initialization = fine_tune(model, cfg, resume, method=method, autoencoder_sha256=metadata['autoencoder_sha256'])
+    if initialization is not None:
+        metadata['initialization'] = initialization
     extra = dict(provenance=metadata, best_validation_lpips=None, last_validated_step=0)
     step = 0
     if resume:
@@ -318,6 +426,8 @@ def train_predictor(cfg, root, method, seed, ae_path, pilot_path, run, device, r
         extra.pop('completion', None)
         extra.pop('selected_artifact', None)
         step = load_checkpoint(model, optimizer, scheduler, resume, device)
+        if 'scaler' in extra:
+            scaler.load_state_dict(extra['scaler'])
         if extra.get('best_checkpoint_pending'):
             copy_checkpoint(resume, run / 'best.pth')
             extra['best_checkpoint_pending'] = False
@@ -332,6 +442,7 @@ def train_predictor(cfg, root, method, seed, ae_path, pilot_path, run, device, r
     total = cfg['training']['max_updates']
     micro = pilot['methods'][method]['micro_batch']
     status = 'incomplete'
+    amp_retries = 0
     try:
         model.train()
         while not stopper.stopped and (step < total or extra.get('last_validated_step', 0) < total):
@@ -340,26 +451,21 @@ def train_predictor(cfg, root, method, seed, ae_path, pilot_path, run, device, r
             if step < total and not _validation_due(step, extra.get('last_validated_step', 0), interval, total):
                 report = step + 1 == total or (monitor.should_log(step + 1) if monitor else (step + 1) % 25 == 0)
                 start_time = time.monotonic()
-                update_losses = []
-                optimizer.zero_grad(set_to_none=True)
-                for offset in range(0, 16, micro):
-                    frames, alpha = batch_at(training, seed, step, offset, micro, device)
-                    loss, ratio = loss_for(model, method, frames, alpha, cfg)
-                    if not torch.isfinite(loss):
-                        raise FloatingPointError('Non-finite training loss')
-                    (loss / (16 // micro)).backward()
-                    if report:
-                        update_losses.append(loss.detach())
-                    if ratio is not None:
-                        ratios.append(ratio)
-                gradient_norm = nn.utils.clip_grad_norm_(parameters(model, method), 1)
-                optimizer.step()
+                update = _predictor_update(model, optimizer, scaler, training, seed, step, micro, method, cfg, device, report)
+                if update is None:
+                    extra['amp_skipped_updates'] = extra.get('amp_skipped_updates', 0) + 1
+                    amp_retries += 1
+                    _record_amp_retry(run, step, scaler, extra['amp_skipped_updates'], amp_retries, monitor)
+                    continue
+                update_losses, ratios, gradient_norm = update
+                amp_retries = 0
                 scheduler.step()
                 step += 1
                 if report:
                     synchronize(device)
                     record_metrics(run, step, {'train/loss': torch.stack(update_losses).mean(), 'train/lr': scheduler.get_last_lr()[0], 'train/gradient_norm_before_clip': gradient_norm,
                         'progress/updates': step, 'progress/total_updates': total, 'performance/update_seconds': time.monotonic() - start_time,
+                        'train/amp_scale': scaler.get_scale(), 'train/amp_skipped_updates': extra.get('amp_skipped_updates', 0),
                         **gpu_metrics(device)}, monitor)
             if _validation_due(step, extra.get('last_validated_step', 0), interval, total):
                 val_snapshot = validation_score(model, method, validation, metric, cfg, device, return_snapshot=True)
@@ -375,6 +481,19 @@ def train_predictor(cfg, root, method, seed, ae_path, pilot_path, run, device, r
                 diagnostic_values = export_snapshot(run, step, method, train_snapshot, val_snapshot,
                     score if improved else extra['best_validation_lpips'], best_step, metadata)
                 diagnostic_values.update(candidate_stopper.metrics())
+                if cfg.get('diagnostics', {}).get('independent_objective', False):
+                    objectives = {
+                        'train_eval/objective': objective_snapshot(model, method, training, cfg, device, loss_for, train_panel=True),
+                        'validation/objective': objective_snapshot(model, method, validation, cfg, device, loss_for)}
+                    diagnostic_values.update(objectives)
+                    diagnostic_path = run / 'diagnostics' / f'step_{step}.json'
+                    diagnostic_record = json.loads(diagnostic_path.read_text())
+                    diagnostic_record['metrics'].update(objectives)
+                    write_json(diagnostic_path, diagnostic_record)
+                    if improved:
+                        best_diagnostics['train_eval']['objective'] = objectives['train_eval/objective']
+                        best_diagnostics['validation']['objective'] = objectives['validation/objective']
+                _export_sequence_media(run, step, method, cfg, train_snapshot, val_snapshot, improved, step == total or candidate_stopper.stopped, monitor)
                 images = None
                 if monitor is not None and monitor.should_media(step, step == total):
                     with preserve_rng(), torch.inference_mode():
@@ -391,9 +510,12 @@ def train_predictor(cfg, root, method, seed, ae_path, pilot_path, run, device, r
                     images['validation/errors_and_masks'] = (error_panel(torch.stack(val_snapshot.real), torch.stack(val_snapshot.reconstructed), torch.stack(val_snapshot.alpha)),
                         'Columns: true future RGB, prediction, absolute error, estimated smoke mask')
                 record_metrics(run, step, diagnostic_values, monitor, images)
+                if cfg.get('study') or cfg.get('diagnostics', {}).get('export_sequences', False):
+                    plot_history(run)
                 extra['last_validated_step'] = step
                 stopper = candidate_stopper
                 extra['early_stopping'] = stopper.state_dict()
+                extra['scaler'] = scaler.state_dict()
                 if improved:
                     extra['best_validation_lpips'] = score
                     extra['best_diagnostics'] = best_diagnostics
@@ -405,21 +527,29 @@ def train_predictor(cfg, root, method, seed, ae_path, pilot_path, run, device, r
                 extra['latent_mask_fraction'] = float(np.mean(ratios)) if ratios else None
                 save_checkpoint(model, optimizer, scheduler, run, step, extra)
                 print(json.dumps(dict(method=method, seed=seed, step=step, validation_lpips=score)), flush=True)
+                if study_pruned(cfg, step, score):
+                    status = 'pruned'
+                    break
         plot_history(run)
-        status = 'complete'
+        if status != 'pruned':
+            status = 'complete'
     finally:
         try:
-            if not isinstance(sys.exc_info()[1], CheckpointWriteError):
+            if (not isinstance(sys.exc_info()[1], (CheckpointWriteError, OptimizerCommitError))
+                    and not getattr(sys.exc_info()[1], 'checkpoint_unsafe', False)):
+                extra['scaler'] = scaler.state_dict()
                 save_checkpoint(model, optimizer, scheduler, run, step, extra)
                 if status == 'complete':
                     write_json(run / 'completion.json', _completion(step, total, stopper))
                     finalize_selection(run, status, step, total)
+                elif status == 'pruned':
+                    write_json(run / 'completion.json', dict(status='pruned', termination_reason='pruning', completed_updates=step, planned_updates=total))
         except BaseException:
             status = 'incomplete'
             raise
         finally:
             final = latest_checkpoint(run)
-            completion = _completion(step, total, stopper) if status == 'complete' else {}
+            completion = _completion(step, total, stopper) if status == 'complete' else ({'termination_reason': 'pruning'} if status == 'pruned' else {})
             write_json(run / 'run.json', metadata | completion | dict(status=status, completed_updates=step, planned_updates=total, last_checkpoint=str(final) if final else None, best_validation_lpips=extra['best_validation_lpips']))
 
 
@@ -428,7 +558,6 @@ def train_autoencoder(cfg, root, run, device, resume=None, monitor=None):
     forecast_task(cfg)
     settings = autoencoder_settings(cfg)
     from model.vqgan.discriminator import build_discriminator
-    from torch.nn import functional as F
 
     training, validation = WindowDataset(root, 'train'), WindowDataset(root, 'val')
     seed_all(cfg['training']['autoencoder_seed'])
@@ -438,13 +567,24 @@ def train_autoencoder(cfg, root, run, device, resume=None, monitor=None):
     optimizer_options = dict(weight_decay=settings['weight_decay'], betas=tuple(settings['betas']), eps=settings['epsilon'])
     optimizer = torch.optim.AdamW(model.parameters(), lr=settings['learning_rate'], **optimizer_options)
     optimizer_d = torch.optim.AdamW(discriminator.parameters(), lr=settings['discriminator_learning_rate'], **optimizer_options)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1)
+    scheduler = scheduler_for(optimizer, cfg, settings)
+    scaler = scaler_for(cfg, device)
     run = Path(run)
     run.mkdir(parents=True, exist_ok=True)
-    metadata = provenance(cfg, root) | dict(method='vqgan', seed=42)
+    metadata = provenance(cfg, root) | dict(method='vqgan', seed=cfg['training']['autoencoder_seed'])
+    initialization = fine_tune(model, cfg, resume, method='vqgan')
+    if initialization is not None:
+        metadata['initialization'] = initialization
+        if not resume and 'discriminator' not in initialization['reset']:
+            parent = torch.load(initialization['parent_checkpoint'], map_location=device, weights_only=True)
+            if 'discriminator' not in parent.get('extra', {}):
+                raise ValueError('VQGAN parent lacks discriminator weights; declare an explicit discriminator reset')
+            discriminator.load_state_dict(parent['extra']['discriminator'], strict=True)
     step, best, status = 0, None, 'incomplete'
     last_validated_step = 0
     pending_best = False
+    amp_skipped_updates = 0
+    amp_retries = 0
     stopper = EarlyStopping(cfg)
     if resume:
         state = torch.load(resume, map_location=device, weights_only=True)
@@ -452,6 +592,9 @@ def train_autoencoder(cfg, root, run, device, resume=None, monitor=None):
         step = load_checkpoint(model, optimizer, scheduler, resume, device)
         discriminator.load_state_dict(state['extra']['discriminator'])
         optimizer_d.load_state_dict(state['extra']['optimizer_d'])
+        if 'scaler' in state['extra']:
+            scaler.load_state_dict(state['extra']['scaler'])
+        amp_skipped_updates = state['extra'].get('amp_skipped_updates', 0)
         best = state['extra']['best_validation_lpips']
         last_validated_step = state['extra'].get('last_validated_step', 0)
         if state['extra'].get('best_checkpoint_pending'):
@@ -473,51 +616,28 @@ def train_autoencoder(cfg, root, run, device, resume=None, monitor=None):
             if step < total and not _validation_due(step, last_validated_step, interval, total):
                 report = step + 1 == cfg['training']['max_updates'] or (monitor.should_log(step + 1) if monitor else (step + 1) % 25 == 0)
                 start_time = time.monotonic()
-                scalars = {key: [] for key in ('generator', 'reconstruction', 'perceptual', 'vq', 'adversarial', 'discriminator')}
-                optimizer.zero_grad(set_to_none=True)
-                optimizer_d.zero_grad(set_to_none=True)
-                for parameter in discriminator.parameters():
-                    parameter.requires_grad_(False)
-                discriminator_batches = []
-                for offset in range(16):
-                    frames, _ = batch_at(training, 42, step, offset, 1, device)
-                    frame_index = (step * 17 + offset) % cfg['task']['clip_frames']
-                    image = frames[:, frame_index]
-                    result = model(image)
-                    reconstruction = (result.reconstructed_images - image).square().mean()
-                    perceptual = metric(result.reconstructed_images, image).mean()
-                    quantization = result.vq_loss.mean()
-                    loss = settings['reconstruction_weight'] * reconstruction + settings['perceptual_weight'] * perceptual + settings['quantization_weight'] * quantization
-                    adversarial = image.new_zeros(())
-                    if step >= cfg['training']['discriminator_start']:
-                        adversarial = discriminator(result.reconstructed_images).mean()
-                        loss = loss - settings['adversarial_weight'] * adversarial
-                    if not torch.isfinite(loss):
-                        raise FloatingPointError('Non-finite autoencoder loss')
-                    (loss / 16).backward()
-                    if report:
-                        for key, value in [('generator', loss), ('reconstruction', reconstruction), ('perceptual', perceptual), ('vq', quantization), ('adversarial', -adversarial)]:
-                            scalars[key].append(value.detach())
-                    if step >= cfg['training']['discriminator_start']:
-                        discriminator_batches.append((image.detach(), result.reconstructed_images.detach()))
-                gradient_norm = nn.utils.clip_grad_norm_(model.parameters(), settings['gradient_clip_norm'])
-                optimizer.step()
-                for parameter in discriminator.parameters():
-                    parameter.requires_grad_(True)
-                if step >= cfg['training']['discriminator_start']:
-                    for real, generated in discriminator_batches:
-                        loss_d = (F.relu(1 - discriminator(real)).mean() + F.relu(1 + discriminator(generated)).mean()) / 2
-                        (loss_d / 16).backward()
-                        if report:
-                            scalars['discriminator'].append(loss_d.detach())
-                    optimizer_d.step()
+                update = _autoencoder_update(model, discriminator, optimizer, optimizer_d, scaler, metric,
+                    training, step, cfg, settings, device, report)
+                if update is None:
+                    amp_skipped_updates += 1
+                    amp_retries += 1
+                    _record_amp_retry(run, step, scaler, amp_skipped_updates, amp_retries, monitor)
+                    continue
+                scalars, gradient_norm = update
+                amp_retries = 0
                 scheduler.step()
+                # Both optimizers follow the same global-update schedule,
+                # including the discriminator's inactive warm-up interval.
+                factor = scheduler.get_last_lr()[0] / settings['learning_rate']
+                for group in optimizer_d.param_groups:
+                    group['lr'] = settings['discriminator_learning_rate'] * factor
                 step += 1
                 if report:
                     synchronize(device)
                     values = {f'train/{key}': torch.stack(values).mean() if values else 0.0 for key, values in scalars.items()}
                     values.update({'train/lr_generator': optimizer.param_groups[0]['lr'], 'train/lr_discriminator': optimizer_d.param_groups[0]['lr'],
-                        'train/gradient_norm_before_clip': gradient_norm,
+                        'train/gradient_norm_before_clip': gradient_norm, 'train/amp_scale': scaler.get_scale(),
+                        'train/amp_skipped_updates': amp_skipped_updates,
                         'train/discriminator_active': step > cfg['training']['discriminator_start'], 'progress/updates': step,
                         'progress/total_updates': cfg['training']['max_updates'], 'performance/update_seconds': time.monotonic() - start_time, **gpu_metrics(device)})
                     record_metrics(run, step, values, monitor)
@@ -534,37 +654,48 @@ def train_autoencoder(cfg, root, run, device, resume=None, monitor=None):
                 candidate_diagnostics = dict(step=step, train_eval=train_snapshot.summary(), validation=val_snapshot.summary()) if improved else best_diagnostics
                 diagnostic_values = export_snapshot(run, step, 'vqgan', train_snapshot, val_snapshot, candidate_best, candidate_step, metadata)
                 diagnostic_values.update(candidate_stopper.metrics())
+                _export_sequence_media(run, step, 'vqgan', cfg, train_snapshot, val_snapshot, improved,
+                    step == total or candidate_stopper.stopped, monitor)
                 images = None
                 if show_images:
                     images = {'validation/reconstructions': (image_panel(torch.stack(val_snapshot.real), torch.stack(val_snapshot.reconstructed)), 'Left: true RGB; right: reconstruction; fixed validation samples'),
                         'validation/errors_and_masks': (error_panel(torch.stack(val_snapshot.real), torch.stack(val_snapshot.reconstructed), torch.stack(val_snapshot.alpha)), 'Columns: true RGB, reconstruction, absolute error, estimated smoke mask'),
                         'train_eval/reconstructions': (image_panel(torch.stack(train_snapshot.real), torch.stack(train_snapshot.reconstructed)), 'Fixed training diagnostic samples; model in eval mode')}
                 record_metrics(run, step, diagnostic_values, monitor, images)
+                if cfg.get('study') or cfg.get('diagnostics', {}).get('export_sequences', False):
+                    plot_history(run)
                 last_validated_step = step
                 stopper = candidate_stopper
                 best, best_step, best_diagnostics = candidate_best, candidate_step, candidate_diagnostics
                 pending_best = improved
-                extra = dict(provenance=metadata, best_validation_lpips=best, best_diagnostics=best_diagnostics, last_validated_step=last_validated_step, best_checkpoint_pending=pending_best, discriminator=discriminator.state_dict(), optimizer_d=optimizer_d.state_dict(), early_stopping=stopper.state_dict())
+                extra = dict(provenance=metadata, best_validation_lpips=best, best_diagnostics=best_diagnostics, last_validated_step=last_validated_step, best_checkpoint_pending=pending_best, discriminator=discriminator.state_dict(), optimizer_d=optimizer_d.state_dict(), early_stopping=stopper.state_dict(), scaler=scaler.state_dict(), amp_skipped_updates=amp_skipped_updates)
                 path = save_checkpoint(model, optimizer, scheduler, run, step, extra)
                 if improved:
                     copy_checkpoint(path, run / 'best.pth')
                     pending_best = False
+                if study_pruned(cfg, step, score):
+                    status = 'pruned'
+                    break
         plot_history(run)
-        status = 'complete'
+        if status != 'pruned':
+            status = 'complete'
     finally:
-        extra = dict(provenance=metadata, best_validation_lpips=best, best_diagnostics=best_diagnostics, last_validated_step=last_validated_step, best_checkpoint_pending=pending_best, discriminator=discriminator.state_dict(), optimizer_d=optimizer_d.state_dict(), early_stopping=stopper.state_dict())
+        extra = dict(provenance=metadata, best_validation_lpips=best, best_diagnostics=best_diagnostics, last_validated_step=last_validated_step, best_checkpoint_pending=pending_best, discriminator=discriminator.state_dict(), optimizer_d=optimizer_d.state_dict(), early_stopping=stopper.state_dict(), scaler=scaler.state_dict(), amp_skipped_updates=amp_skipped_updates)
         try:
-            if not isinstance(sys.exc_info()[1], CheckpointWriteError):
+            if (not isinstance(sys.exc_info()[1], (CheckpointWriteError, OptimizerCommitError))
+                    and not getattr(sys.exc_info()[1], 'checkpoint_unsafe', False)):
                 save_checkpoint(model, optimizer, scheduler, run, step, extra)
                 if status == 'complete':
                     write_json(run / 'completion.json', _completion(step, cfg['training']['max_updates'], stopper))
                     finalize_selection(run, status, step, cfg['training']['max_updates'])
+                elif status == 'pruned':
+                    write_json(run / 'completion.json', dict(status='pruned', termination_reason='pruning', completed_updates=step, planned_updates=cfg['training']['max_updates']))
         except BaseException:
             status = 'incomplete'
             raise
         finally:
             final = latest_checkpoint(run)
-            completion = _completion(step, cfg['training']['max_updates'], stopper) if status == 'complete' else {}
+            completion = _completion(step, cfg['training']['max_updates'], stopper) if status == 'complete' else ({'termination_reason': 'pruning'} if status == 'pruned' else {})
             write_json(run / 'run.json', metadata | completion | dict(status=status, completed_updates=step, best_validation_lpips=best, last_checkpoint=str(final) if final else None))
 
 
@@ -623,7 +754,7 @@ def evaluate(cfg, root, method, seed, checkpoint, autoencoder, split, output, de
     if method in LEARNED:
         state = validate_artifact(checkpoint, cfg, root, method)
         if method.startswith('flow'):
-            validate_artifact(autoencoder, cfg, root, 'vqgan')
+            validate_artifact(autoencoder, autoencoder_protocol(cfg), root, 'vqgan')
         model = model_for(cfg, method, autoencoder).to(device).eval()
         expected = state['extra']['provenance']
         if expected['method'] != method or expected['seed'] != seed or not _protocols_compatible(expected['protocol_sha256'], digest(cfg), Path(checkpoint).parent.parent) or expected['dataset_sha256'] != file_hash(Path(root) / 'dataset_manifest.json'):

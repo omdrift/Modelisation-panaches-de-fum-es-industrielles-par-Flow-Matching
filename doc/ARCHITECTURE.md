@@ -1,91 +1,107 @@
 # Industrial Plume Forecasting — architecture
 
-Ce document décrit les relations entre les données, les modèles et les artefacts. La commande `pipeline` est le point d'entrée canonique ; les commandes individuelles servent au diagnostic ou à la reprise ciblée.
+Le dépôt expose deux parcours : `study` compare des configurations selon un plan versionné ; `pipeline` exécute une recette fixe avec les références. Les commandes de préparation, d'inspection et d'évaluation restent disponibles séparément. Les données préparées sont réutilisables sans les vidéos sources.
 
-## Vue d'ensemble
+## Données et absence de fuite temporelle
 
 ```mermaid
 flowchart TD
-    A[RISE metadata + MP4] --> B[prepare]
-    B --> C[36 frames RGB + alpha 64x64]
-    C --> D[check-data]
-    D --> E[pilot]
-    E --> F[VQGAN commun]
-    F --> G[SimVP]
-    F --> H[Flow Matching uniforme]
-    F --> I[Flow Matching pondéré alpha]
-    G --> J[Evaluation: test_dates + test_views]
-    H --> J
-    I --> J
-    C --> J
-    J --> K[summarize]
-    K --> L[summary.json + CSV + graphiques]
+    A[RISE: métadonnées et MP4] --> B[Décodage des 36 acquisitions]
+    B --> C[CLIPSeg indépendant par image et filtre spatial]
+    C --> D[NPZ: raw_frames, frames, alpha en 64x64]
+    D --> E[Manifests: identifiants, dates, vues, temps et empreintes]
+    E --> F[Train et validation]
+    E --> G[Tests réservés par dates et vues]
+    F --> H[VQGAN et prédicteur]
+    I[Cinq observations transformées] --> H
+    H --> J[Quinze images futures générées]
+    G --> K[Comparaison après gel de la sélection]
+    J --> K
 ```
 
-Chaque flèche représente une dépendance vérifiée par l'orchestrateur. Un stage ne peut pas être marqué terminé si son manifeste, son checkpoint ou ses métriques sont absents.
+La segmentation d'une observation utilise seulement cette image et des poids/paramètres figés. Une autre image du clip ne doit modifier ni son RGB transformé ni son masque. Le générateur reçoit cinq observations et réutilise ensuite ses propres prédictions ; les vraies images futures et leurs masques servent uniquement à la mesure.
 
-## Une fenêtre et l'absence de fuite
+L'apprentissage Flow sélectionne une cible, sa référence précédente et une condition antérieure parmi les 36 images. Ce conditionnement temporel parcimonieux se distingue d'une perte directe sur quinze images futures. Le temps de transport de l'ODE se distingue des horodatages des acquisitions.
+
+Les audits de recherche lisent train et validation. Les manifestes identifient les partitions réservées ; les pixels et résultats du test sont différés jusqu'au gel des choix. Les doublons exacts sont recherchés sur les RGB avant segmentation ; une forte similarité est signalée sans changement automatique de partition.
+
+## Sélection progressive
+
+```mermaid
+flowchart TD
+    A[Configuration d'étude et identité des données] --> B[Six essais VQGAN: graine 42]
+    B --> C[Deux finalistes sur trois graines]
+    C --> D[Deux prévisions identiques avec VQGAN de graine 42]
+    D --> E[Représentation commune sélectionnée et gelée]
+    E --> F[Six essais Flow uniforme: graine 42]
+    F --> G[Deux finalistes sur trois graines]
+    G --> H[Configuration Flow choisie par LPIPS moyen]
+    H --> I[Flow pondéré: mêmes réglages et trois graines]
+    I --> J[final_selection.json: choix et empreintes]
+    J --> K[Audit final et tests dates/vues]
+    K --> L[Mesures, médias et rapport]
+```
+
+Les phases comprennent au maximum douze entraînements VQGAN et dix-sept Flow. Les candidats croisent trois learning rates et deux schedulers. Les explorations et prévisions comparant les VQGAN ont un plafond de 15 000 mises à jour ; les confirmations et Flow pondérés de 50 000. Les graines de confirmation sont 17, 42 et 2026.
+
+Optuna stocke les essais séquentiels dans SQLite. Son pruning médian compare seulement les explorations, après trois essais terminés et 7 500 mises à jour. Les confirmations sont indépendantes de ce pruning. Le choix de VQGAN utilise la prévision en validation, avec reconstruction moyenne comme départage. Le choix Flow utilise la moyenne des graines en validation. Les tests ne participent à aucune de ces décisions.
+
+## Mesure et contrôle de l'entraînement
 
 ```mermaid
 flowchart LR
-    X[Clip complet: 36 images] --> R[RGB source]
-    R --> S[CLIPSeg image par image]
-    S --> M[alpha soft mask]
-    S --> T[RGB de fumée isolée]
-    T --> P[observations C=5]
-    T --> Y[cibles futures H=15]
-    P --> N[prédicteur]
-    N --> Q[15 images générées]
-    Y --> E[mesures uniquement]
-    Q --> E
-    M --> E
+    A[Poids courants] --> B[Évaluation sur panels et tirages fixes]
+    T[Train: 60 fenêtres] --> B
+    V[Validation: 60 fenêtres] --> B
+    B --> C[LPIPS et erreurs RGB/régionales]
+    B --> D[Codebook VQGAN ou objectif latent Flow]
+    B --> E[Huit clips visuels: PNG et GIF]
+    C --> F[Minimum brut: best.pth]
+    C --> G[Progrès significatif: patience]
+    G --> H[Fin propre sur plateau]
+    C --> I[Courbes locales et W&B]
+    D --> I
+    E --> I
 ```
 
-Pendant la génération, le prédicteur reçoit uniquement les cinq observations. Les quinze images futures et leurs masques sont utilisés après la génération pour la perte de validation ou les métriques de test ; ils ne sont jamais transmis à l'entrée du prédicteur.
+Les diagnostics restaurent les RNG et les modes des modules. Flow compare aussi l'objectif latent sur des tirages fixes indépendants ; la sélection reste fondée sur les images générées et décodées. Une réalisation est utilisée en exploration Flow, quatre en confirmation, pour les prévisions comparant les VQGAN et au test. Les réalisations sont toutes incluses dans la moyenne.
 
-## Monitoring et sélection
+Dans l'étude, VQGAN valide toutes les 250 mises à jour avec patience 10 ; Flow toutes les 2 500 avec patience quatre. Le comptage débute à 5 000 mises à jour, avec `min_delta=1e-4`. Le minimum brut sélectionnant `best.pth` est distinct de l'amélioration significative qui remet la patience à zéro. L'arrêt anticipé ne prouve ni convergence globale ni absence de surapprentissage.
 
-```mermaid
-flowchart TD
-    A[Poids à une étape de validation] --> B[Inférence sans gradients]
-    T[Panel train fixe] --> B
-    V[Panel validation fixe] --> B
-    B --> C[LPIPS train et validation]
-    B --> D[Erreurs fumée et fond + images]
-    B --> E[Utilisation du codebook VQGAN]
-    C --> F[Tendances et écart de généralisation]
-    V --> G[LPIPS de validation pour sélection]
-    A --> G
-    G --> H[best.pth si amélioration]
-    V --> P[Patience sur LPIPS de validation]
-    P --> R[Checkpoint et fin propre si plateau]
-    R --> S[Étape suivante de la pipeline]
-    C --> J[WandB + diagnostics JSON]
-    D --> J
-    E --> J
-    F --> J
-```
-
-Les diagnostics ne modifient ni l'objectif d'entraînement ni le critère de sélection. Les états aléatoires et les modes des modules sont restaurés après l'inférence. Un écart train/validation ou une faible utilisation du codebook constitue un signal à examiner ; aucun de ces indicateurs ne prouve à lui seul un surapprentissage. Les ensembles de test restent réservés à l'évaluation finale.
-
-L'arrêt anticipé est une politique distincte fondée uniquement sur le LPIPS de validation : dix validations sans baisse significative de 0,0001, après 5 000 mises à jour et la phase initiale. Le minimum brut sélectionnant `best.pth` est indépendant de cette référence. Les compteurs sont persistés ; une validation interrompue est rejouée avant la prochaine mise à jour. Une fin anticipée valide conserve `status=complete` et ajoute `termination_reason=early_stopping` ; une interruption reste incomplète.
-
-## États de campagne
+## États et reprise
 
 ```mermaid
 stateDiagram-v2
     [*] --> pending
-    pending --> running: lancement du stage
-    running --> complete: sorties + empreintes valides
-    running --> failed: erreur ou sortie incomplète
-    running --> interrupted: arrêt utilisateur
-    interrupted --> running: pipeline --resume
-    failed --> running: correction puis --resume
+    pending --> running: lancement contrôlé
+    running --> complete: sorties et décision valides
+    running --> pruned: comparaison intermédiaire autorisée
+    running --> failed: erreur ou valeurs non finies
+    running --> interrupted: arrêt du processus
+    interrupted --> running: reprise compatible
+    failed --> running: correction et reprise compatible
     complete --> complete: réutilisation après vérification
 ```
 
-`pipeline.json` conserve l'état de chaque stage, la commande exécutée, le protocole, les chemins d'entrée et les empreintes des sorties. `protocol.yaml` est une copie figée de la configuration utilisée pour la campagne. Les logs sont dans `runs_scientific/<campagne>/logs/`.
+Une fin par plafond ou arrêt anticipé est complète, avec motif explicite. Une interruption ne constitue pas une sélection finale. Les états Optuna et les états des runs sont reliés dans le registre sans confondre essai pruné et candidat confirmé.
 
-## Dossiers publiables
+La reprise exige les mêmes identités de code, données, paramètres et artefacts. Elle restaure optimiseurs, schedulers, RNG, patience et scaler AMP si activé. Un fine-tuning crée un autre run avec parent et réinitialisations déclarés.
 
-Le dépôt contient le code, le protocole, la bibliographie, les tests et les notices de licence. Les vidéos, les données préparées, les poids CLIPSeg/LPIPS, les checkpoints, les sessions WandB et les sorties de campagne sont locales et ignorées par Git. Publier les métriques et les manifests d'une campagne séparément, après vérification de leur empreinte et de leur licence.
+## Artefacts et présentation
+
+| Niveau | Artefacts |
+|---|---|
+| Étude | `study.json`, `optuna.sqlite3`, `experiments.csv`, `report.json`, `report.md` |
+| Run | Protocole résolu, `effective_training.json`, métriques, diagnostics, médias, checkpoints |
+| Décision | `final_selection.json` avec empreintes gelées avant test |
+| Évaluation | Métriques par fenêtre/horizon/réalisation, durées, NFE, prédictions NPZ, médias |
+| Campagne fixe | `pipeline.json`, protocole figé, logs et synthèse |
+| Observateur | `campaign_monitor/status.json`, identité W&B, état de lecture et snapshot |
+
+Le suivi W&B est optionnel ; les sorties locales restent disponibles. L'observateur de campagne lit les artefacts avec un verrou séparé, sans charger les tenseurs ni exécuter l'entraînement. Les vues sont séparées par méthode et accompagnées d'une définition des mesures. Les archives de test présentes indiquent une progression d'écriture, sans constituer un score final.
+
+Pendant l'apprentissage, conserver deux checkpoints de récupération et le meilleur. Les médias récents, du meilleur checkpoint et finaux limitent l'accumulation. Après clôture, les finalistes conservent leurs états complets ; les autres essais gardent leurs poids sélectionnés et preuves expérimentales.
+
+## Publication
+
+Le dépôt contient code, configurations, protocole, références, tests et licences. Vidéos, NPZ, poids, caches, sessions W&B et résultats locaux restent exclus de Git. Une publication de résultats doit relier métriques, configurations et empreintes des artefacts, sans assimiler tests logiciels ou reconstruction d'images à une démonstration de qualité prédictive.

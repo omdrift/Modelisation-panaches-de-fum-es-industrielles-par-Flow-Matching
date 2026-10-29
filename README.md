@@ -1,28 +1,33 @@
 # Industrial Plume Forecasting
 
-Reproducible video forecasting of industrial smoke using CLIPSeg preprocessing, a VQGAN latent representation, and sparsely conditioned Flow Matching inspired by [RIVER](https://github.com/araachie/river).
+Reproducible industrial smoke video forecasting with CLIPSeg preprocessing, VQGAN representations and temporally conditioned Flow Matching inspired by [RIVER](https://arxiv.org/abs/2211.14575).
 
-The reference experiment retains all **36 consecutive frames** of every source clip. Each frame is segmented at source resolution with CLIPSeg and a spatial guided filter, then stored at **64×64 RGB** with a soft alpha mask. The reference forecast task uses **5 observed images followed by 15 future images**. The full clip remains available to preprocessing, training and automatic checks.
+Each prepared clip retains **36 consecutive RGB frames at 64×64**, including intervals without smoke. Forecast evaluation uses **5 observed frames followed by 15 generated frames**. Estimated soft masks support regional diagnostics and a smoke-weighted loss. The experiment evaluates two-dimensional visual prediction; it does not measure emissions, physical concentration or validated three-dimensional dynamics.
 
-The comparison contains persistence, Farnebäck optical-flow extrapolation, compact SimVP, uniform Flow Matching, and alpha-weighted Flow Matching. No physical concentration, emissions or validated three-dimensional plume dynamics are inferred from the RGB experiment.
+The repository provides controlled hyperparameter comparisons, validation-only model selection, early stopping, recoverable checkpoints, fixed image/animation panels and held-out evaluation. No completed multi-seed forecasting result or optimal hyperparameter setting is claimed.
 
-The implementation provides dataset checks, sequential orchestration, validation-based early stopping, checkpoint recovery, fixed-panel diagnostics and held-out evaluation. The protocol and software are available; consolidated forecasting results and a calibrated optimal learning rate have not been established.
+## Data and prediction
 
 ```mermaid
 flowchart LR
-    R[RISE: 36 source frames] --> S[Per-frame CLIPSeg and spatial refinement]
-    S --> D[64×64 RGB + estimated masks + provenance]
-    D --> A[Common VQGAN trained then frozen]
-    A --> F[Uniform / alpha-weighted Flow Matching]
-    D --> B[Persistence / optical flow / compact SimVP]
-    F --> E[5 observations → 15 predicted images]
-    B --> E
-    E --> V[Held-out dates and views: LPIPS + regional errors]
+    A[RISE MP4: 36 frames] --> B[Per-frame CLIPSeg and spatial refinement]
+    B --> C[NPZ: RGB, estimated alpha, provenance]
+    C --> D[Train and validation partitions]
+    D --> E[VQGAN reconstruction study]
+    E --> F[Selected frozen VQGAN]
+    F --> G[Uniform and alpha-weighted Flow Matching]
+    C --> H[Five observed frames]
+    H --> G
+    G --> I[Fifteen generated frames]
+    J[Reserved future dates and views] --> K[Final evaluation after selection freeze]
+    I --> K
 ```
+
+CLIPSeg operates independently on each source frame before spatial reduction. Future real images are never inputs to forecast generation. Acquisition intervals are preserved in the manifests; GIF playback speed is not a physical time reference.
 
 ## Installation
 
-The tested environment is Python 3.11 with PyTorch 2.7.1 and CUDA 12.8.
+The canonical environment uses Python 3.11, PyTorch 2.7.1 and CUDA 12.8. Optuna **4.6.0** supplies sequential study storage and pruning.
 
 ```bash
 conda env create -f environment_scientific.yml
@@ -31,105 +36,113 @@ python -m scientific.cli doctor
 python -m pytest -q
 ```
 
-`doctor` checks installed dependencies and CUDA availability without downloading data or starting training.
+For an existing environment, run `conda env update -n smoke-science -f environment_scientific.yml`. Optuna can also be installed in that environment with `python -m pip install optuna==4.6.0`.
 
-## Complete campaign
+## Controlled VQGAN and Flow Matching study
 
-The canonical entry point is the sequential pipeline. It prepares data, verifies manifests, runs the resource pilot, trains the common VQGAN, trains all predictor seeds, evaluates both held-out splits, and writes the final summary.
+The study declares six candidates per model: learning rates **5e-5, 1e-4 and 2e-4**, each with a constant or cosine schedule. Architecture, effective batch size 16, losses and data stay fixed. These are experimental hypotheses, not established optimal values.
 
-The supplied hyperparameters are exploratory starting values. The pipeline executes the declared recipe; it does not tune it. Before a confirmatory study, register a controlled calibration on training/validation data and freeze its selected configuration. The [training design and chart guide](doc/TRAINING_DESIGN.md) documents parameter origins, differences from RIVER/VQGAN, calibration commands and interpretation limits.
-
-```bash
-python -m wandb login
-export CUBLAS_WORKSPACE_CONFIG=:4096:8
-
-python -m scientific.cli \
-  --context-frames 5 --horizon 15 \
-  pipeline \
-  --videos smoke_videos \
-  --data scientific_data/smoke \
-  --campaign runs_scientific/smoke \
-  --cache-dir scientific_models/huggingface \
-  --wandb --wandb-project smoke-science
-```
-
-The reference pipeline contains 45 ordered stages.
-
-VQGAN and every learned predictor stop after ten validation checks without a significant LPIPS decrease (`min_delta: 0.0001`), with patience counting from 5,000 updates and after their initial warmup/adversarial activation. The maximum remains 100,000 updates. `best.pth` always keeps the lowest raw validation LPIPS, and the pipeline continues after a clean early stop. The policy is explicit in `training.early_stopping`; its defaults are exploratory. Existing frozen protocols without this block remain unchanged. The [runbook](doc/SCIENTIFIC_RUNBOOK.md#early-stopping-and-existing-campaigns) describes the explicit opt-in for an interrupted older campaign.
-
-When a completed prepared dataset already exists, the pipeline reuses it and verifies its NPZ files, masks and manifests before training. Source MP4s and the CLIPSeg cache are not needed for this path. `--videos` is optional (default `smoke_videos`) and is used only when data preparation is needed:
+First inspect the execution plan. This command creates no output and starts no training:
 
 ```bash
-python -m scientific.cli --context-frames 5 --horizon 15 pipeline \
-  --data scientific_data/smoke --campaign runs_scientific/smoke \
-  --wandb --wandb-project smoke-science
+python -m scientific.cli study \
+  --config configs/experiment_study.yaml \
+  --data scientific_data/v1_2_clipseg_fast \
+  --output runs_scientific/plume_study \
+  --dry-run
 ```
 
-Retain the entire prepared directory, including `dataset_manifest.json` and partition manifests. NPZ files alone are insufficient. Repeating or changing segmentation requires the original MP4s or a new download.
-
-A dry-run prints the matrix without starting a job:
+Launch the complete study with one command:
 
 ```bash
-python -m scientific.cli --context-frames 5 --horizon 15 pipeline \
-  --videos smoke_videos --data scientific_data/smoke \
-  --campaign runs_scientific/smoke --dry-run
+python -m scientific.cli study \
+  --config configs/experiment_study.yaml \
+  --data scientific_data/v1_2_clipseg_fast \
+  --output runs_scientific/plume_study \
+  --wandb
 ```
 
-After an interruption, the same campaign can be resumed with `--resume`. Use `--protocol runs_scientific/smoke/protocol.yaml` when the reference configuration has changed since campaign creation. Completed outputs are checked by hash; preparation uses its journal and training uses compatible checkpoints. Every stage writes a log under `runs_scientific/smoke/logs/`. Campaign state is stored in `pipeline.json` and the resolved protocol in `protocol.yaml`.
+Online tracking requires an existing W&B login (`python -m wandb login`). Without `--wandb`, local structured logs, plots, images and reports remain available. Append `--resume` to resume the same study after an interruption.
 
-WandB monitoring is optional. Online runs require `python -m wandb login`; `--wandb-mode offline` stores local tracking data. Scalar metrics are also written to each run's `metrics.jsonl`.
+```mermaid
+flowchart TD
+    A[Six VQGAN candidates: seed 42] --> B[Two finalists confirmed on three seeds]
+    B --> C[Two identical Flow probes using VQGAN seed 42]
+    C --> D[Select and freeze common VQGAN]
+    D --> E[Six uniform Flow candidates: seed 42]
+    E --> F[Two finalists confirmed on three seeds]
+    F --> G[Select Flow configuration by mean validation LPIPS]
+    G --> H[Alpha-weighted Flow: same settings, three seeds]
+    H --> I[Freeze selected artifacts]
+    I --> J[Held-out dates and views: final metrics and media]
+```
 
-Monitoring compares fixed training and validation panels, smoke/background errors, trivial baselines, date/view slices and VQ codebook utilization. The W&B workspace includes an interpretation card, seven main VQGAN charts including patience against its threshold and fixed error/mask images; detailed analyses stay collapsed. Counters stay in the recorded reports. `tools/configure_wandb.py` creates or updates a stable named workspace without restarting training; setup is in the [runbook](doc/SCIENTIFIC_RUNBOOK.md#monitoring-and-recovery). A five-validation trend flag is advisory and does not prove overfitting or change checkpoint selection. Saved VQGAN checkpoints can be inspected with `inspect-autoencoder`. Each learned run exports `effective_training.json`, separating the VQGAN recipe from predictor settings.
+| Phase | Maximum training runs | Maximum updates per run |
+|---|---:|---:|
+| VQGAN exploration + finalist confirmation | 6 + 6 | 15,000 / 50,000 |
+| Flow probes to compare VQGAN finalists | 2 | 15,000 |
+| Uniform Flow exploration + finalist confirmation | 6 + 6 | 15,000 / 50,000 |
+| Alpha-weighted Flow with selected settings | 3 | 50,000 |
+| **Total** | **29** | Early stopping may shorten each run |
 
-## Data preparation
+Confirmation seeds are **17, 42 and 2026**. VQGAN selection considers reconstruction first and forecasting performance second. Flow configuration selection uses mean validation LPIPS across seeds. Tests remain unavailable for selection until configurations and artifacts are frozen. Pruned, failed and interrupted trials remain in the study record.
 
-The public RISE metadata snapshot is included at `prepare_data/metadata_02242020.json`. Videos are downloaded separately:
+VQGAN validation runs every 250 updates with patience 10; Flow validation runs every 2,500 updates with patience four. Patience starts after 5,000 updates, with significant improvement `min_delta=1e-4`. The raw minimum still selects `best.pth`. Exploration uses one fixed Flow realization per window; confirmations, VQGAN comparison probes and final tests average four realizations without selecting the best sample.
+
+Synthetic resource probes measure VQGAN memory and update time, then predictor throughput. These probes do not score the dataset. Validation, visualization and export time are additional to the measured optimizer-update time.
+
+During an active run, two recovery checkpoints and the best state are retained. A completed exploratory trial keeps `weights.pth` and its provenance; finalists keep their full selected `best.pth`. The study registry resumes completed trials without retaining redundant numbered checkpoints.
+
+## Images, monitoring and interpretation
+
+- Fixed train/validation panels contain up to 60 windows, with eight examples reserved for visual comparisons.
+- VQGAN exports original/reconstruction/error grids and 36-frame animations. Flow exports the five observations and all fifteen future frames with prediction/error comparisons.
+- Plots cover LPIPS, MSE, PSNR, SSIM, smoke/background errors, codebook utilization, learning rates, gradient norms, memory, elapsed time and early-stopping progress.
+- Flow objective diagnostics use fixed random draws on train and validation. Their latent velocity error is distinct from decoded-image LPIPS, which controls model selection.
+- After final selection, the two held-out partitions receive metrics, reconstructions/predictions, animations and horizon curves. No intermediate test score guides tuning.
+
+Train/validation gaps and trends are descriptive. An early stop or a minimum validation score does not prove the absence of overfitting. Repeated validation-based selection can itself introduce bias; the search is bounded and its entire comparison history is retained. See the [training and chart guide](doc/TRAINING_DESIGN.md).
+
+## Prepared data and fixed-configuration pipeline
+
+A complete prepared dataset can be used without the source MP4s. Keep the NPZ files, `dataset_manifest.json` and all partition manifests together. Changing segmentation requires the original videos.
+
+To prepare a new dataset:
 
 ```bash
 python -m scientific.cli inventory --output scientific_data/inventory.json
 python -m scientific.cli download --videos smoke_videos
 python -m scientific.cli prepare \
   --videos smoke_videos --output scientific_data/smoke \
-  --cache-dir scientific_models/huggingface --device cuda --batch-frames 1
-python -m scientific.cli check-data --data scientific_data/smoke
+  --cache-dir scientific_models/huggingface --device cuda
 ```
 
-Each NPZ stores `raw_frames`, segmented `frames`, and `alpha`, each with 36 time steps. Manifests retain video identifiers, camera and view identifiers, dates, acquisition indices, timestamps, source resolution and SHA-256 checksums. CLIPSeg weights are pinned by revision and checksum; they are downloaded separately and are not redistributed.
+The study audits train/validation before search and all partitions after selection. The separate `check-data` command performs a full dataset check; within this study, use it after the selection freeze.
 
-## Scientific protocol
+The separate `pipeline` command executes a declared fixed configuration, including persistence, Farnebäck optical flow and compact SimVP comparisons. It does not perform hyperparameter selection:
 
-The frozen protocol defines RISE temporal and view partitions, causal preprocessing, the VQGAN architecture, Flow Matching target construction, three predictor seeds (`17`, `42`, `2026`), validation-only checkpoint selection, four stochastic realizations for Flow Matching, and LPIPS as the primary metric.
+```bash
+python -m scientific.cli --context-frames 5 --horizon 15 pipeline \
+  --data scientific_data/v1_2_clipseg_fast \
+  --campaign runs_scientific/smoke \
+  --wandb --wandb-project smoke-science
+```
 
-The Python namespace `scientific`, configuration filename `scientific_protocol.yaml`, and environment `smoke-science` are retained as stable interfaces. The project name is **Industrial Plume Forecasting**.
+Its defaults remain defined in `configs/scientific_protocol.yaml`; the controlled study explicitly overrides its own schedules, validation intervals and exposure limits. Frozen configurations are checked on resume.
+
+## Documentation
 
 - [Scientific protocol](doc/SCIENTIFIC_PROTOCOL.md)
-- [Training design, calibration and chart guide](doc/TRAINING_DESIGN.md)
+- [Training design and metric interpretation](doc/TRAINING_DESIGN.md)
+- [Execution and recovery guide](doc/SCIENTIFIC_RUNBOOK.md)
 - [Architecture and diagrams](doc/ARCHITECTURE.md)
-- [Runbook](doc/SCIENTIFIC_RUNBOOK.md)
-- [Experiment matrix](doc/EXPERIMENT_MATRIX.csv)
-- [Literature and verified references](doc/SCIENTIFIC_LITERATURE.md)
-- [BibTeX](doc/references.bib)
-- [Engineering design and verification](doc/ENGINEERING.md)
+- [Engineering contracts and verification](doc/ENGINEERING.md)
+- [Literature](doc/SCIENTIFIC_LITERATURE.md) and [BibTeX](doc/references.bib)
 
-## Repository layout
+The import namespace `scientific`, existing commands and environment name `smoke-science` remain stable. Local videos, NPZ datasets, cached model weights, checkpoints and tracking sessions are excluded from Git. The public repository contains implementation, protocols, references, tests and license notices.
 
-```text
-configs/       Frozen scientific configuration
-scientific/    Preparation, orchestration, monitoring, evaluation and analysis
-model/         Flow Matching and VQGAN implementations
-training/      Checkpoint and random-state serialization
-prepare_data/  Public RISE metadata snapshot
-tools/         Segmentation benchmark, calibration registration, W&B layout
-tests/         Automated correctness and recovery tests
-doc/           Protocol, runbook, architecture, literature and matrix
-```
+## Limitations and license
 
-Local videos, prepared datasets, model caches, checkpoints, WandB sessions and campaign outputs are excluded by `.gitignore`.
+CLIPSeg can confuse smoke, steam, clouds and background structures. Alpha masks are semantic estimates, not independent annotations or calibrated opacity. LPIPS and regional image errors measure visual similarity; FVD is reserved for an extension with justified sequence lengths and sample counts.
 
-## Scope and limitations
-
-CLIPSeg can confuse smoke with steam, clouds and background structures. The alpha field is a semantic estimate, not calibrated opacity or an independent annotation. LPIPS, MSE, PSNR, SSIM and mask-region errors evaluate visual prediction only. FVD is reserved for a later extension with a justified sequence length and sample size.
-
-## License
-
-The code is distributed under [GPL-3.0](LICENSE), consistent with the RIVER-derived components. Component and dataset notices are collected in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Contribution procedures are documented in [CONTRIBUTING.md](CONTRIBUTING.md).
+Code is distributed under [GPL-3.0](LICENSE), consistent with RIVER-derived components. See [third-party notices](THIRD_PARTY_NOTICES.md) and [contribution procedures](CONTRIBUTING.md).

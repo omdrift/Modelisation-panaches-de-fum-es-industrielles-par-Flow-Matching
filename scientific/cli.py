@@ -11,6 +11,7 @@ import json
 import math
 from pathlib import Path
 import re
+import warnings
 
 from scientific.protocol import load_protocol, partition, eligible, write_json, write_jsonl, digest, file_hash, LEARNED, METHODS, forecast_task, validate_prepared_data
 
@@ -295,6 +296,18 @@ def _build_parser():
     pipeline.add_argument('--resume', action='store_true', help='Reuse verified outputs and continue interrupted stages')
     pipeline.add_argument('--dry-run', action='store_true', help='Print the ordered commands without creating artifacts or starting jobs')
     add_monitoring_arguments(pipeline)
+    study = commands.add_parser('study', help='Compare VQGAN and Flow configurations sequentially on validation')
+    study.add_argument('--config', default='configs/experiment_study.yaml')
+    study.add_argument('--data', required=True)
+    study.add_argument('--output', required=True)
+    study.add_argument('--resume', action='store_true')
+    study.add_argument('--dry-run', action='store_true', help='Show the experiment matrix without writing or training')
+    add_monitoring_arguments(study)
+    reconstruction = commands.add_parser('study-evaluate-autoencoder', help='Evaluate a frozen study autoencoder on a final test partition')
+    reconstruction.add_argument('--campaign', required=True)
+    reconstruction.add_argument('--data', required=True)
+    reconstruction.add_argument('--checkpoint', required=True)
+    reconstruction.add_argument('--split', choices=('test_dates', 'test_views'), required=True)
     check = commands.add_parser('check-data')
     check.add_argument('--data', required=True)
     inspection = commands.add_parser('inspect-autoencoder', help='Diagnose fixed train/validation panels without training or test-set evaluation')
@@ -305,10 +318,10 @@ def _build_parser():
     summary = commands.add_parser('summarize')
     summary.add_argument('--inputs', nargs='+', required=True)
     summary.add_argument('--output', required=True)
-    for name in ('pilot', 'autoencoder', 'train', 'evaluate'):
+    for name in ('pilot', 'pilot-autoencoder', 'autoencoder', 'train', 'evaluate'):
         command = commands.add_parser(name)
         command.add_argument('--campaign', required=True)
-        command.add_argument('--data', required=name != 'pilot')
+        command.add_argument('--data', required=name not in ('pilot', 'pilot-autoencoder'))
         if name in ('train', 'evaluate'):
             command.add_argument('--method', choices=LEARNED if name == 'train' else METHODS, required=True)
             command.add_argument('--seed', choices=(17, 42, 2026), type=int, required=True)
@@ -342,12 +355,21 @@ def _run_training_command(cfg, args, parser, campaign, device, runner):
             mode=args.wandb_mode, log_every=args.wandb_log_every, media_every=args.wandb_media_every)
         tracking = WandbMonitor(directory, cfg, 'vqgan' if args.command == 'autoencoder' else args.method,
             cfg['training']['autoencoder_seed'] if args.command == 'autoencoder' else args.seed, options, resume=bool(args.resume))
-    with tracking as monitor:
-        kwargs = {'monitor': monitor} if monitor is not None else {}
-        if args.command == 'autoencoder':
-            result = runner.train_autoencoder(cfg, args.data, directory, device, args.resume, **kwargs)
-        else:
-            result = runner.train_predictor(cfg, args.data, args.method, args.seed, args.autoencoder, args.pilot, directory, device, args.resume, **kwargs)
+    try:
+        with tracking as monitor:
+            kwargs = {'monitor': monitor} if monitor is not None else {}
+            if args.command == 'autoencoder':
+                result = runner.train_autoencoder(cfg, args.data, directory, device, args.resume, **kwargs)
+            else:
+                result = runner.train_predictor(cfg, args.data, args.method, args.seed, args.autoencoder, args.pilot, directory, device, args.resume, **kwargs)
+    except Exception as exc:
+        if cfg.get('study'):
+            category = 'out_of_memory' if isinstance(exc, MemoryError) or 'OutOfMemory' in type(exc).__name__ else 'non_finite' if isinstance(exc, FloatingPointError) else 'execution'
+            try:
+                write_json(campaign / 'failure.json', dict(category=category, error=f'{type(exc).__name__}: {exc}'))
+            except OSError as cleanup_error:
+                warnings.warn(f'Failure receipt cleanup also failed: {cleanup_error}', RuntimeWarning)
+        raise
     return result
 
 
@@ -363,8 +385,20 @@ def _run_gpu_command(cfg, args, parser):
         parser.error('--autoencoder is required for Flow Matching')
     if args.command == 'evaluate' and args.method in LEARNED and not args.checkpoint:
         parser.error('--checkpoint is required for a learned predictor')
-    if args.command != 'pilot':
-        check_data(args.data, cfg)
+    if cfg.get('study') and args.command in ('evaluate', 'study-evaluate-autoencoder'):
+        from scientific.study_evaluation import verify_selection
+        verify_selection(cfg, args.checkpoint, args.data)
+    if args.command not in ('pilot', 'pilot-autoencoder'):
+        if cfg.get('study') and args.command in ('train', 'autoencoder'):
+            # Study optimization never opens held-out test pixels, including during validation.
+            from scientific.data import WindowDataset
+            validate_prepared_data(json.loads((Path(args.data) / 'dataset_manifest.json').read_text()), cfg)
+            for split in ('train', 'val'):
+                dataset = WindowDataset(args.data, split)
+                for index in range(len(dataset)):
+                    dataset[index]
+        else:
+            check_data(args.data, cfg)
     campaign.mkdir(parents=True, exist_ok=True)
     with (campaign / 'campaign.lock').open('a+') as lock:
         try:
@@ -375,6 +409,13 @@ def _run_gpu_command(cfg, args, parser):
             result = _run_training_command(cfg, args, parser, campaign, device, runner)
         elif args.command == 'pilot':
             result = runner.profile(cfg, campaign / 'pilot.json', device)
+        elif args.command == 'pilot-autoencoder':
+            from scientific.study_pilot import profile_autoencoder
+            result = profile_autoencoder(cfg, campaign / 'pilot_autoencoder.json', device)
+        elif args.command == 'study-evaluate-autoencoder':
+            from scientific.study_evaluation import evaluate_autoencoder
+            result = evaluate_autoencoder(cfg, args.data, args.checkpoint, args.split,
+                campaign / 'evaluation' / f'vqgan_{args.split}', device)
         else:
             destination = campaign / 'evaluation' / f'{args.method}_{args.seed}_{args.split}'
             if args.retry_incomplete:
@@ -398,7 +439,7 @@ def main(argv=None):
         cfg['evaluation']['context_frames'] = args.context_frames
     if args.horizon is not None:
         cfg['evaluation']['horizon'] = args.horizon
-    forecast_task(cfg, required=args.command in ('pipeline', 'pilot', 'autoencoder', 'train', 'evaluate', 'summarize'))
+    forecast_task(cfg, required=args.command in ('pipeline', 'study', 'pilot', 'autoencoder', 'train', 'evaluate', 'summarize', 'study-evaluate-autoencoder'))
     if args.command == 'doctor':
         result = doctor()
         print(json.dumps(result, indent=2))
@@ -415,6 +456,9 @@ def main(argv=None):
     elif args.command == 'pipeline':
         from scientific.pipeline import run_pipeline
         result = run_pipeline(cfg, args)
+    elif args.command == 'study':
+        from scientific.study import run_study
+        result = run_study(cfg, args)
     elif args.command == 'check-data':
         result = check_data(args.data, cfg)
     elif args.command == 'inspect-autoencoder':

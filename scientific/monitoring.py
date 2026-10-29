@@ -86,7 +86,12 @@ class WandbMonitor:
                 for name in ('train_eval/lpips', 'validation/lpips', 'validation/smoke_mse',
                              'validation/background_mse', 'validation/errors_and_masks',
                              'generalization/lpips_gap', 'validation/codebook/perplexity',
-                             'validation/codebook/used_fraction', 'early_stopping/bad_checks'):
+                             'validation/codebook/used_fraction', 'early_stopping/bad_checks',
+                             'train_eval/objective', 'validation/objective', 'validation/ssim',
+                             'train/lr', 'train/gradient_norm_before_clip', 'train/loss',
+                             'train/reconstruction', 'train/perceptual', 'train/vq',
+                             'train/lr_generator', 'train/lr_discriminator',
+                             'selection/best_step', 'performance/update_seconds'):
                     self.run.define_metric(name, step_metric='global_step', hidden=False)
                 self.identity = dict(id=run_id, project=self.options.project, entity=self.run.entity,
                                      mode=self.options.mode, directory=str(session), url=self.run.url if self.options.mode == 'online' else None,
@@ -110,6 +115,18 @@ class WandbMonitor:
             for key, (pixels, caption) in (images or {}).items():
                 payload[key] = self.sdk.Image(pixels, caption=caption)
             # Separate optimizer-update axis permits a checkpoint rollback online.
+            self.run.log(payload)
+
+    def log_media(self, step, paths):
+        """Publish deterministic local animations without changing training RNG."""
+        with preserve_rng():
+            payload = {'global_step': step}
+            for key, path in paths.items():
+                path = Path(path)
+                if path.suffix.lower() == '.gif':
+                    payload[key] = self.sdk.Video(str(path), format='gif')
+                else:
+                    payload[key] = self.sdk.Image(str(path))
             self.run.log(payload)
 
     def __exit__(self, exc_type, exc, tb):

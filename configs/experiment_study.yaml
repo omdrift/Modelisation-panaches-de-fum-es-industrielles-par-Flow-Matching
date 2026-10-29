@@ -1,0 +1,19 @@
+version: 1
+name: industrial_plume_forecasting
+search:
+  learning_rates: [0.00005, 0.0001, 0.0002]
+  schedules: [constant, cosine]
+  exploration_updates: 15000
+  confirmation_updates: 50000
+  probe_updates: 15000
+  exploration_seed: 42
+  confirmation_seeds: [17, 42, 2026]
+  finalists: 2
+pruning:
+  startup_trials: 3
+  min_updates: 7500
+diagnostics:
+  train_windows: 60
+  visual_windows: 8
+  export_sequences: true
+final_test: true

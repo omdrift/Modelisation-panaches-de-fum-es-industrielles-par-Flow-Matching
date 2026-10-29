@@ -27,6 +27,54 @@ def test_flow_guide_distinguishes_validation_draw_from_final_test_samples(method
     assert 'gelé' in guide
 
 
+@pytest.mark.parametrize('method', ['flow_uniform', 'flow_alpha'])
+def test_flow_dashboard_compares_fixed_objectives_and_explains_selection(method):
+    plan = section_plan(method)
+    chart_keys = [keys for section in plan for _, keys in section.get('charts', [])]
+    assert ['train_eval/objective', 'validation/objective'] in chart_keys
+    assert ['train/lr'] in chart_keys
+    assert ['train/gradient_norm_before_clip'] in chart_keys
+    assert ['early_stopping/bad_checks', 'early_stopping/patience'] in chart_keys
+    assert 'erreur de vitesse latente' in plan[0]['markdown'][0]
+    media = [key for section in plan for key in section.get('media', [])]
+    assert 'train_eval/animations' in media and 'validation/animations' in media
+
+
+def test_vqgan_dashboard_has_learning_rates_and_structural_quality_metrics():
+    chart_keys = [keys for section in section_plan('vqgan') for _, keys in section.get('charts', [])]
+    assert ['train/lr_generator', 'train/lr_discriminator'] in chart_keys
+    assert ['train_eval/ssim', 'validation/ssim'] in chart_keys
+    assert ['train_eval/psnr', 'validation/psnr'] in chart_keys
+
+
+def test_offline_dashboard_never_contacts_wandb(tmp_path, monkeypatch):
+    from tools import configure_wandb as dashboard
+
+    def forbidden_sdk():
+        raise AssertionError('offline dashboard tried contacting W&B')
+
+    monkeypatch.setattr(dashboard, 'load_sdk', forbidden_sdk)
+    with pytest.raises(ValueError, match='online'):
+        dashboard.configure(dict(mode='offline'), 'vqgan', tmp_path, apply=True)
+
+
+def test_observer_dashboard_command_uses_separate_status_metadata(tmp_path, monkeypatch, capsys):
+    from tools import configure_wandb as dashboard
+    directory = tmp_path / 'campaign_monitor'
+    directory.mkdir()
+    (directory / 'wandb.json').write_text(json.dumps(dict(entity='team', project='smoke')))
+    (directory / 'status.json').write_text(json.dumps(dict(method='campaign_monitor', status='complete')))
+
+    def configure(identity, method, path, *, apply):
+        assert method == 'campaign_monitor'
+        assert path == tmp_path / 'dashboard'
+        return dict(applied=apply)
+
+    monkeypatch.setattr(dashboard, 'configure', configure)
+    dashboard.main(['--run-directory', str(directory)])
+    assert json.loads(capsys.readouterr().out) == {'applied': False}
+
+
 def test_main_workspace_is_small_and_detailed_groups_are_collapsed():
     plan = section_plan('vqgan')
     assert 'Lire les courbes' in plan[0]['markdown'][0]

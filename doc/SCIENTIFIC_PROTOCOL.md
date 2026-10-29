@@ -1,6 +1,6 @@
 # Industrial Plume Forecasting — protocole expérimental
 
-La configuration de référence est `configs/scientific_protocol.yaml`. Fixer les données, le scénario, les hyperparamètres et les règles de sélection avant la campagne. Les résultats, y compris une absence d'amélioration, doivent rester traçables à leurs artefacts.
+L'étude est définie dans `configs/experiment_study.yaml`, à partir de la configuration de modèle `configs/scientific_protocol.yaml`. Fixer les données, le scénario, les candidats et les règles de sélection avant leur exécution. Chaque run conserve ses paramètres résolus. Les résultats, y compris une absence d'amélioration, doivent rester traçables à leurs artefacts.
 
 ## 1. Questions et portée
 
@@ -76,7 +76,7 @@ Modifier une autre image du clip ne doit modifier ni une observation transformé
 
 ## 5. Contrôles des données
 
-`check-data` vérifie les empreintes, l'absence de chevauchement des identifiants vidéo, la continuité temporelle et le contenu de chaque clip sélectionné : formes, types RGB, masques finis et bornes. L'entraînement et l'évaluation exigent la réussite de ces contrôles logiciels. Ceux-ci ne démontrent pas une précision de segmentation sur le corpus ; aucune IoU, Dice ou erreur d'alpha n'est revendiquée sans annotations indépendantes.
+`check-data` vérifie les empreintes, l'absence de chevauchement des identifiants vidéo, la continuité temporelle et le contenu de chaque clip sélectionné : formes, types RGB, masques finis et bornes. L'étude applique ses contrôles de recherche à train/validation puis diffère la lecture des pixels de test jusqu'au gel de la sélection. La commande générale `check-data` réalise un contrôle complet ; dans cette étude, l'utiliser après ce gel. Ces vérifications ne démontrent pas une précision de segmentation sur le corpus ; aucune IoU, Dice ou erreur d'alpha n'est revendiquée sans annotations indépendantes.
 
 La spécification de préparation est indépendante de `C/H` et des paramètres des prédicteurs. Les pixels, partitions et paramètres de segmentation doivent correspondre au manifeste fourni.
 
@@ -92,60 +92,97 @@ La spécification de préparation est indépendante de `C/H` et des paramètres 
 
 ### VQGAN commun
 
-Le VQGAN transforme les RGB 64×64×3 en latents 8×8×256. Son codebook contient 1 024 vecteurs, avec coefficient d'engagement 0,1 et canaux intermédiaires 128. Les paramètres déclarés dans le YAML définissent les fabriques. GroupNorm utilise le plus grand diviseur commun de 32 et du nombre de canaux.
+Le VQGAN transforme les RGB 64×64×3 en latents 8×8×256. Son codebook contient 1 024 vecteurs, avec coefficient d'engagement 0,1 et canaux intermédiaires 128. Les dimensions de l'encodeur, du dictionnaire, du décodeur et du champ de vecteurs doivent correspondre. GroupNorm utilise le plus grand diviseur commun de 32 et du nombre de canaux.
 
-Graine 42. Recette exploratoire déclarée dans `training.autoencoder` : MSE de reconstruction, LPIPS officiel AlexNet v0.1, perte VQ et terme adversarial hinge, de poids 1, 1, 1 et 0,1. Activer le discriminateur après la mise à jour 1 000. Deux optimiseurs AdamW à 2e-4 constants, betas 0,9/0,999, epsilon 1e-8, décroissance 1e-6 ; seize images par mise à jour par accumulation, choisies avec un calendrier déterministe. Validation toutes les 250 mises à jour et à la fin, écrêtage de norme à 1. Ces choix ne reproduisent pas exactement l'optimiseur et la perte adaptative du VQGAN CompVis.
+L'objectif additionne MSE de reconstruction, LPIPS officiel AlexNet v0.1, perte VQ et terme adversarial hinge, de poids 1, 1, 1 et 0,1. Le discriminateur démarre après 1 000 mises à jour. Les deux optimiseurs sont AdamW, betas 0,9/0,999, epsilon 1e-8, décroissance 1e-6 et écrêtage de norme à 1. Seize images contribuent à chaque mise à jour par accumulation, selon un calendrier déterministe. La reconstruction utilise les 36 images disponibles ; la présentation visuelle conserve leur ordre.
 
-Les origines des paramètres, leurs limites et une comparaison préenregistrée des LR sont détaillées dans [TRAINING_DESIGN.md](TRAINING_DESIGN.md). Le protocole de référence n'atteste pas leur optimalité. Séparer la calibration sur apprentissage/validation de la campagne confirmatoire ; figer les décisions avant toute consultation des tests. Chaque run exporte ses réglages effectifs dans `effective_training.json`.
+La recette est une adaptation : elle ne reproduit pas la perte L1 et la pondération adversariale adaptative du VQGAN CompVis. La capacité et les poids des pertes restent constants dans la première recherche. Les origines et limites des paramètres figurent dans [TRAINING_DESIGN.md](TRAINING_DESIGN.md).
 
-Sélectionner le checkpoint par LPIPS de validation, puis geler le VQGAN commun à tous les prédicteurs latents. La variabilité de cet autoencodeur n'est pas répétée et doit être déclarée comme limite.
+### Flow Matching temporel
 
-### RIVER / Flow Matching
+Sur un clip d'apprentissage, tirer une cible `k∈{2,…,35}`, la référence `k−1` et une condition `j<k−1`, en indices Python. Le réseau reçoit le latent bruité, la référence, la condition, le temps de transport et la distance temporelle. Les images après la cible ne participent pas à cet exemple de perte. Cet apprentissage parcimonieux sur 36 images est distinct de l'évaluation autorégressive 5 → 15 ; il ne constitue pas une perte directe sur quinze cibles simultanées.
 
-Sur chaque clip d'apprentissage, tirer une cible `k∈{2,…,35}`, sa référence `k−1` et une condition `j<k−1` (indices Python). Le réseau reçoit le latent bruité, la référence, la condition, le temps de transport et la distance temporelle. Les images après la cible ne participent pas à son exemple de perte.
+Avec bruit gaussien `eps`, temps `t∈[0,1]` et latent cible `z`, construire `z_t=[1−(1−sigma)t]eps+t z` et la vitesse `v=z−(1−sigma)eps`, avec `sigma=0,001`. Le temps de transport n'est pas le temps physique entre acquisitions. La représentation VQGAN reste gelée.
 
-Avec bruit gaussien `eps`, temps `t∈[0,1]` et latent cible `z`, construire `z_t=[1−(1−sigma)t]eps+t z` et `v=z−(1−sigma)eps`, avec `sigma=0,001`. Le temps de transport ne représente pas les secondes entre acquisitions.
+La variante uniforme minimise une MSE latente. La variante pondérée réduit le masque cible en 8×8 puis applique `w=5 alpha+1(1−alpha)`, normalisé par la moyenne spatiale de chaque cible. Le masque cible ne participe jamais à la génération. Le masque fondé sur la norme latente reste un diagnostic à confronter aux masques estimés.
 
-La perte uniforme est une MSE latente. Pour la pondération, réduire le masque cible en 8×8 puis calculer `w=5 alpha+1(1−alpha)`. Normaliser spatialement `w` par sa moyenne pour chaque cible avant de pondérer l'erreur ; modifier le micro-lot ne doit pas modifier cet objectif. Consigner la fraction du masque par norme latente comme diagnostic distinct.
+La génération part des cinq observations puis réutilise ses propres images prédites. Elle produit quinze futurs avec RK4, une grille de 17 points et un RNG explicite. Enregistrer le nombre réel d'appels au réseau ; le nombre de points de grille ne suffit pas à le déduire pour toute implémentation.
 
-Le Transformer utilise une dimension interne 512, six couches et deux couches intermédiaires. À l'évaluation, générer autorégressivement les `H` images avec RK4 : 17 points, soit 16 intervalles et normalement 64 appels au réseau par image. Exporter le nombre réel d'appels. Les tirages utilisent un générateur explicite.
+### Références
 
-### SimVP
+SimVP compact utilise directement les RGB et une sous-séquence `C+H` tirée dans le clip. Son adaptation emploie 32 canaux spatiaux, 128 temporels, quatre blocs spatiaux et quatre temporels avec sortie tanh. Aucune reproduction des scores de l'article original n'est revendiquée. Persistance et Farnebäck complètent la comparaison à configuration fixe.
 
-L'adaptation compacte utilise 32 canaux spatiaux, 128 temporels, profondeur spatiale 4, profondeur temporelle 4 et sortie tanh. Elle apprend sur une sous-séquence de longueur `C+H` tirée dans le clip complet, puis génère par blocs de `C` jusqu'à `H`. Elle ne revendique pas la reproduction des scores de l'article SimVP.
+## 7. Étude des hyperparamètres
 
-### Plan commun
+L'étude versionnée est définie dans `configs/experiment_study.yaml`. La commande `study` organise les entraînements séquentiels à partir des données préparées ; la commande `pipeline` reste disponible pour exécuter une configuration fixe. Les valeurs par défaut de `configs/scientific_protocol.yaml` ne remplacent pas les réglages résolus de l'étude.
 
-Trois graines pour chaque prédicteur : **17, 42, 2026**. Lot effectif seize par accumulation. AdamW, taux 1e-4, décroissance 5e-6 et échauffement linéaire 1 000 mises à jour, puis LR constant. Les paramètres communs ne s'appliquent pas au VQGAN. `training.max_updates` fixe un plafond commun, actuellement 100 000 ; cette limite ne démontre pas une convergence. Sélection et arrêt uniquement sur la validation.
+### Candidats et paramètres constants
 
-`training.early_stopping` active pour le VQGAN et chaque prédicteur une patience de dix validations sans baisse de LPIPS strictement supérieure à 0,0001. Le compteur reste nul avant 5 000 mises à jour, avant la fin de l'échauffement des prédicteurs et avant l'activation adversariale du VQGAN. La référence d'amélioration significative reste fixe entre deux progrès suffisants : de petits gains cumulés peuvent réinitialiser la patience. Le meilleur checkpoint conserve indépendamment le minimum brut de LPIPS. Les tests ne participent jamais à l'arrêt.
+Chaque modèle compare le produit cartésien de trois learning rates (`5e-5`, `1e-4`, `2e-4`) et deux schedulers (constant, cosinus). Pour VQGAN, générateur et discriminateur partagent le learning rate. Pour Flow, l'échauffement linéaire dure 1 000 mises à jour. Le cosinus atteint 10 % du learning rate initial au plafond déclaré, même si un arrêt anticipé termine le run avant cette échéance.
 
-Une fin anticipée réussie reste `status=complete`, avec `termination_reason=early_stopping`, le nombre réel de mises à jour et la décision persistée. La pipeline utilise ensuite `best.pth` et poursuit ses étapes. Même plafond et même politique ne signifient pas une exposition réalisée identique : publier les durées, mises à jour et motifs d'arrêt par méthode et graine. Les calibrations préenregistrées à exposition identique désactivent explicitement l'arrêt anticipé. Les protocoles antérieurs sans politique restent désactivés ; une adoption en cours d'étude doit être déclarée et ne constitue pas une règle préenregistrée rétroactivement.
+Lot effectif 16, architecture, codebook, régularisation, poids des pertes et transformations des données restent fixés. Des espaces de recherche distincts pourront étudier capacité et pondérations ; leur modification exige une nouvelle étude. Six candidats ne démontrent pas une optimalité sur un espace continu ou sur toutes les architectures.
 
-Le pilote synthétique mesure mémoire et débit pour choisir un micro-lot parmi 4, 2 et 1. Il conserve le nombre configuré de mises à jour. Ses résultats ne sont pas des mesures de qualité prédictive. Les checkpoints conservent poids, optimiseurs, scheduler, RNG et provenance. La reprise exige les mêmes sources, données, configuration et artefacts. Documenter les entraînements incomplets.
+### Séquence de sélection
 
-### Diagnostics de généralisation
+| Phase | Runs au maximum | Graines | Plafond par run | Réalisations Flow en validation |
+|---|---:|---|---:|---:|
+| Exploration VQGAN | 6 | 42 | 15 000 | Sans objet |
+| Confirmation de deux VQGAN finalistes | 6 | 17, 42, 2026 | 50 000 | Sans objet |
+| Prévision comparant les deux VQGAN | 2 | 42 | 15 000 | 4 |
+| Exploration Flow uniforme | 6 | 42 | 15 000 | 1 |
+| Confirmation de deux Flow finalistes | 6 | 17, 42, 2026 | 50 000 | 4 |
+| Flow pondéré, réglages sélectionnés | 3 | 17, 42, 2026 | 50 000 | 4 |
+| **Total** | **29** | | | |
 
-À chaque validation, comparer le LPIPS avec un panel fixe d'apprentissage en mode évaluation : jusqu'à 60 clips pour le VQGAN et 8 pour les prédicteurs. Le nombre d'images, les identifiants et les indices sont exportés. Consigner l'écart train/validation, MSE fumée/fond, référence triviale noire ou par persistance, résultats par date et vue, et utilisation du codebook globale et dans les régions de fumée. Les pseudo-masques ne constituent pas une vérité terrain indépendante.
+Les six essais VQGAN sont classés par leur minimum de LPIPS de reconstruction en validation. Les deux configurations retenues sont entraînées depuis de nouvelles initialisations sur trois graines. Leur qualité de reconstruction moyenne est consignée. Les deux artefacts de graine 42 alimentent ensuite deux prévisions strictement identiques par leur recette Flow, leur graine et leur exposition maximale. Le VQGAN est choisi par la LPIPS de prévision ; une égalité est départagée par la reconstruction moyenne. Sa graine 42 fournit la représentation commune gelée. La variabilité de reconstruction entre graines est rapportée sans choisir a posteriori une graine favorable.
 
-Les diagnostics préservent les états aléatoires, les modes des modules et les paramètres. Le choix des images de validation, les tirages de génération et la moyenne LPIPS utilisés pour sélectionner le checkpoint restent identiques. Les diagnostics complémentaires ne deviennent pas un nouveau critère de sélection après observation des résultats.
+Le Flow uniforme est ensuite exploré avec ce VQGAN, puis ses deux configurations finalistes sont confirmées sur trois graines. Le choix repose sur la moyenne du LPIPS de validation des graines, avec un départage déterministe enregistré. La variante pondérée réutilise exactement les réglages retenus ; sa pondération 5/1 constitue l'ablation. Les modèles stochastiques incluent toutes leurs réalisations dans la moyenne, sans sélection du meilleur tirage.
 
-Un signal descriptif de surapprentissage possible repose sur cinq validations successives : pente négative du LPIPS du panel d'apprentissage, pente positive du LPIPS de validation, et score courant supérieur de plus de 10 % au meilleur score. Ce signal ne déclenche aucun arrêt automatique et n'est pas une preuve statistique. La sélection répétée sur un panel fini peut elle-même introduire un biais ; l'évaluation finale reste réservée aux tests indépendants.
+### Pruning et arrêt anticipé
 
-## 7. Évaluation
+Optuna 4.6.0 conserve l'étude en SQLite. L'exécution est séquentielle. Le pruning médian ne s'applique qu'aux explorations, après trois essais terminés et au moins 7 500 mises à jour, en comparant les évaluations au même stade. Les confirmations et les deux prévisions comparant les VQGAN ne subissent pas ce pruning comparatif. Un essai pruné n'est pas un finaliste terminé ; son exposition et son motif restent visibles.
 
-Critère principal : **LPIPS AlexNet v0.1**, moyenné sur tous les horizons futurs. Produire quatre réalisations par clip pour Flow Matching et les inclure toutes, sans choisir la meilleure. Les références déterministes ont une seule réalisation ; leurs identifiants de graine servent à conserver les clés des comparaisons appariées.
+| Modèle dans l'étude | Validation | Patience | Début de comptage | Baisse significative |
+|---|---:|---:|---:|---:|
+| VQGAN | Toutes les 250 mises à jour | 10 validations | 5 000 mises à jour | Strictement plus de 0,0001 LPIPS |
+| Flow | Toutes les 2 500 mises à jour | 4 validations | 5 000 mises à jour | Strictement plus de 0,0001 LPIPS |
 
-Rapporter MSE, PSNR, SSIM, erreurs dans les régions fumée/fond estimées, diversité MSE entre réalisations, temps de génération, mémoire et nombre d'appels au réseau. Les régions sont définies par les pseudo-masques ; leurs erreurs ne sont pas une validation physique. Exporter les courbes selon l'horizon et choisir les horizons des tableaux avant de consulter le test.
+`best.pth` conserve indépendamment le minimum brut, même si son amélioration est inférieure au seuil. La patience compare au dernier progrès significatif ; des gains infimes peuvent donc s'accumuler contre cette référence. Les décisions persistées distinguent `early_stopping`, plafond, pruning, interruption et échec. Publier les expositions réelles, qui peuvent différer malgré un même plafond.
 
-Utiliser les mêmes panels fixés pour toutes les méthodes. Rapporter différences appariées, moyennes par graine, variabilité entre graines et intervalles à 95 % par bootstrap regroupé par journée, avec 2 000 réplications. Ne pas traiter les images d'une même journée comme des observations indépendantes.
+Le pilote synthétique mesure mémoire et débit ; ses mesures ne constituent pas des résultats sur RISE. Une estimation de durée doit préciser le matériel, le coût des validations et les hypothèses de reprise.
 
-La FVD reste une extension exigeant une longueur de séquence, un extracteur et des effectifs justifiés. Elle n'est pas un critère central de cette campagne.
+## 8. Diagnostics et évaluation finale
 
-## 8. Artefacts et analyse
+### Panels et protection du test
 
-Chaque réalisation exporte les prédictions NPZ et une empreinte ; chaque ligne de métrique identifie méthode, graine, clip, horizon et réalisation. Les fichiers d'évaluation relient configuration, données, checkpoint et poids LPIPS. L'agrégation rejette grilles incomplètes, doublons, valeurs non finies et métriques factices injectées par les tests.
+Sélectionner de manière déterministe 60 fenêtres de diagnostic train et les 60 fenêtres de validation, avec huit exemples visuels par partition. Consigner identifiants, indices et graines des tirages. Les diagnostics préservent les RNG, modes des modules et paramètres. Les objectifs Flow utilisent des tirages fixes indépendants de l'apprentissage.
 
-Analyser disparition du panache, immobilité, apparition sur le fond et dérive temporelle. Fixer les exemples qualitatifs avant la mesure et ajouter des cas d'échec représentatifs. Préserver les résultats négatifs et distinguer non-convergence, défaut de données et limites de modèle.
+Avant sélection, l'audit lit les pixels et vérifie les empreintes de train et validation seulement. Il recherche des doublons exacts sur `raw_frames`, et signale les fortes similarités sans supprimer ni déplacer silencieusement une fenêtre. Les manifests de test peuvent identifier les partitions réservées ; leurs pixels, illustrations et scores ne doivent pas guider les décisions. L'audit complet des partitions de test intervient après gel des configurations et des artefacts. Une anomalie invalidant la séparation est rapportée ; une partition corrigée constitue une nouvelle version du dataset.
 
-L'article suit : introduction, travaux connexes, méthode, protocole, résultats, discussion et limites. Les tableaux et conclusions doivent provenir des artefacts vérifiés. Ne pas annoncer une supériorité, une nouveauté ou une validité physique qui n'a pas été démontrée.
+### Mesures et illustrations
+
+Le critère principal est **LPIPS AlexNet v0.1**, moyenné sur les quinze horizons futurs pour la prévision. Rapporter aussi MSE, PSNR, SSIM, erreurs fumée/fond estimées, diversité MSE entre réalisations, temps, mémoire et appels réels au réseau. Les régions absentes restent manquantes et leur couverture est consignée.
+
+VQGAN exporte RGB réel, reconstruction et erreur pour les 36 images. Flow identifie les cinq observations puis présente les quinze futurs réels et générés, avec erreurs. Les huit exemples fixés alimentent grilles PNG et GIF, sur train/validation pendant l'apprentissage et sur les tests après sélection. Les masques restent des estimations, sans vérité terrain indépendante.
+
+Les graphiques montrent qualité train/validation, écarts, tendances, objectif Flow sur tirages fixes, codebook VQGAN, LR, gradients, valeurs non finies, temps, mémoire, meilleur checkpoint et patience. Le guide définit unités et limites. Un objectif latent qui diminue ne prouve pas une amélioration de la génération autorégressive. Ni une patience épuisée ni une faible LPIPS ne certifient l'absence de surapprentissage.
+
+### Tests et incertitude
+
+Après sélection figée, évaluer les mêmes fenêtres de `test_dates` et `test_views` pour toutes les méthodes. Flow utilise quatre réalisations par fenêtre ; les méthodes déterministes une seule. Les identifiants de graine des références ne créent pas des réalisations indépendantes.
+
+Rapporter les horizons 1, 4, 8, 12 et 15, les courbes complètes, les différences appariées, la variabilité entre les trois graines et les intervalles à 95 % par bootstrap regroupé par journée, avec 2 000 réplications. Ne pas traiter les images d'une journée comme des observations indépendantes. Le nombre limité de journées de validation et les choix répétés sur ce panel restent des limites, conformément au biais de sélection décrit par [Cawley et Talbot](https://www.jmlr.org/beta/papers/v11/cawley10a.html).
+
+La FVD reste une extension exigeant longueur de séquence, extracteur et effectifs justifiés. Aucune mesure d'image n'est présentée comme une validation physique du panache.
+
+## 9. Artefacts et traçabilité
+
+Chaque essai enregistre configuration résolue, graine, données, sources, versions, checkpoint parent éventuel, score, étape choisie, durée et état. SQLite, CSV et JSON conservent également les échecs, OOM, interruptions et essais prunés. La reprise exacte exige les mêmes identités et restaure optimiseurs, schedulers, RNG et scaler lorsque la précision mixte est activée.
+
+Le fine-tuning crée un nouveau run et déclare `training.init_from` avec `path` et `reset`, l'empreinte parent et les composants réinitialisés : optimiseur, scheduler, RNG et arrêt anticipé. Pour un parent VQGAN sans état du discriminateur, sa réinitialisation doit aussi être explicite. Le fine-tuning ne transforme pas une reprise en changement discret de LR ou d'objectif et reste séparé des nouvelles initialisations de la comparaison principale. La sélection est gelée avant les tests.
+
+Pendant l'apprentissage, conserver deux checkpoints de récupération et `best.pth` par remplacement atomique. Après clôture, conserver les poids sélectionnés et les preuves expérimentales ; les finalistes conservent leurs états complets. Les aperçus récents, ceux du meilleur checkpoint et les exports finaux sont conservés sans accumulation de tous les médias intermédiaires.
+
+Les évaluations exportent une ligne par fenêtre, horizon et réalisation, les prédictions NPZ, empreintes, réglages et identifiants des modèles. L'agrégation rejette cellules manquantes, doublons et valeurs non finies. Analyser disparition, immobilité, apparition sur le fond et dérive temporelle, en conservant les résultats négatifs.
+
+L'article suit introduction, travaux connexes, méthode, protocole, résultats, discussion et limites. Les tableaux et conclusions doivent provenir d'artefacts complets et identifiés. Les tests logiciels et les données synthétiques ne constituent pas des résultats scientifiques sur RISE.
